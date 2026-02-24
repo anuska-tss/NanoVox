@@ -1,9 +1,28 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import './App.css'
 
-// Icons
+const SunIcon = () => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="5" />
+        <line x1="12" y1="1" x2="12" y2="3" />
+        <line x1="12" y1="21" x2="12" y2="23" />
+        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+        <line x1="1" y1="12" x2="3" y2="12" />
+        <line x1="21" y1="12" x2="23" y2="12" />
+        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+    </svg>
+)
+
+const MoonIcon = () => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+    </svg>
+)
+
 const UploadIcon = () => (
-    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" strokeLinecap="round" strokeLinejoin="round" />
         <polyline points="17 8 12 3 7 8" strokeLinecap="round" strokeLinejoin="round" />
         <line x1="12" y1="3" x2="12" y2="15" strokeLinecap="round" strokeLinejoin="round" />
@@ -11,24 +30,343 @@ const UploadIcon = () => (
 )
 
 const FileIcon = () => (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
         <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
         <polyline points="14 2 14 8 20 8" />
     </svg>
 )
 
 const CheckIcon = () => (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
         <polyline points="20 6 9 17 4 12" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
 )
 
+const InfoIcon = () => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <circle cx="12" cy="12" r="10" />
+        <line x1="12" y1="8" x2="12" y2="12" />
+        <line x1="12" y1="16" x2="12.01" y2="16" />
+    </svg>
+)
+
+const ChevronIcon = ({ open }) => (
+    <svg
+        width="14" height="14" viewBox="0 0 24 24" fill="none"
+        stroke="currentColor" strokeWidth="1.5"
+        style={{ transform: open ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}
+        aria-hidden="true"
+    >
+        <polyline points="6 9 12 15 18 9" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+)
+
+const DEFAULT_WEIGHTS = { talk_ratio: 10, sentiment: 20, empathy: 10, resolution: 60 }
+
+const PARAM_INFO = {
+    talk_ratio: { label: 'Talk Ratio', icon: '🎙️' },
+    sentiment: { label: 'Sentiment', icon: '😊' },
+    empathy: { label: 'Empathy', icon: '🤝' },
+    resolution: { label: 'Resolution', icon: '✅' },
+}
+
+const formatSize = (bytes) => {
+    if (bytes === 0) return '0 B'
+    const k = 1024
+    const sizes = ['B', 'KB', 'MB', 'GB']
+    const i = Math.floor(Math.log(bytes) / Math.log(k))
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
+}
+
+const getScoreColor = (score) => {
+    if (score >= 80) return 'var(--success)'
+    if (score >= 60) return 'var(--warning)'
+    return 'var(--danger)'
+}
+
+const getScoreLabel = (score) => {
+    if (score >= 80) return 'Strong'
+    if (score >= 60) return 'Fair'
+    return 'Needs Work'
+}
+
+const CircularGauge = ({ score }) => {
+    const radius = 44
+    const circumference = 2 * Math.PI * radius
+    const offset = circumference - (score / 100) * circumference
+
+    return (
+        <div className="gauge-wrapper" role="img" aria-label={`Score: ${score.toFixed(1)} out of 100`}>
+            <svg width="100%" height="100%" viewBox="0 0 100 100">
+                <defs>
+                    <linearGradient id="gaugeGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" stopColor="var(--gradient-start)" />
+                        <stop offset="100%" stopColor="var(--gradient-end)" />
+                    </linearGradient>
+                </defs>
+                <circle cx="50" cy="50" r={radius} fill="none" stroke="var(--bg-surface)" strokeWidth="6" />
+                <circle
+                    cx="50" cy="50" r={radius}
+                    fill="none"
+                    stroke="url(#gaugeGradient)"
+                    strokeWidth="6"
+                    strokeLinecap="round"
+                    strokeDasharray={circumference}
+                    strokeDashoffset={offset}
+                    transform="rotate(-90 50 50)"
+                    style={{ transition: 'stroke-dashoffset 0.8s ease-out' }}
+                />
+            </svg>
+            <div className="gauge-center">
+                <span className="gauge-score">{score.toFixed(0)}</span>
+                <span className="gauge-label">{getScoreLabel(score)}</span>
+            </div>
+        </div>
+    )
+}
+
+const ScoreCard = ({ analysis }) => {
+    if (!analysis || analysis.error) {
+        return (
+            <div className="score-card">
+                <div className="score-card-error">
+                    <span>Scoring data unavailable</span>
+                    {analysis?.message && <p>{analysis.message}</p>}
+                </div>
+            </div>
+        )
+    }
+
+    const { final_score, profile_used, interpretation } = analysis
+
+    return (
+        <div className="score-card">
+            <div className="score-card-header">
+                <div>
+                    <h3>Call Quality</h3>
+                    <span className="profile-badge">{profile_used}</span>
+                </div>
+                <CircularGauge score={final_score} />
+            </div>
+            <hr className="score-divider" />
+            {interpretation && (
+                <p className="score-interpretation">{interpretation}</p>
+            )}
+        </div>
+    )
+}
+
+const ParameterCard = ({ paramKey, param }) => {
+    const [expanded, setExpanded] = useState(false)
+    const color = getScoreColor(param.score)
+
+    const contextText = param.metadata?.context_text || `Score: ${param.score.toFixed(0)}/100`
+    const phrases = param.metadata?.detected_phrases || []
+    const sentimentImproved = param.metadata?.sentiment_improved
+    const status = param.metadata?.status
+
+    return (
+        <div
+            className="param-card"
+            onClick={() => setExpanded(e => !e)}
+            role="button"
+            aria-expanded={expanded}
+            tabIndex={0}
+            onKeyDown={(e) => e.key === 'Enter' && setExpanded(e => !e)}
+        >
+            <div className="param-card-header">
+                <div className="param-icon-title">
+                    <span className="param-icon" aria-hidden="true">{param.icon}</span>
+                    <span className="param-name">{param.display_name}</span>
+                </div>
+                <ChevronIcon open={expanded} />
+            </div>
+
+            <p className="param-context">{contextText}</p>
+
+            <div className="param-score-row">
+                <span className="param-score-num" style={{ color }}>{param.score.toFixed(0)}</span>
+                <div className="param-score-bar-bg">
+                    <div
+                        className="param-score-bar-fill"
+                        style={{ width: `${param.score}%`, background: color }}
+                    />
+                </div>
+            </div>
+
+            <div className="param-footer">
+                <span>Weight {param.weight.toFixed(0)}%</span>
+                <span style={{ color: param.contribution < -10 ? 'var(--danger)' : undefined }}>
+                    {param.contribution > 0 ? '+' : ''}{param.contribution.toFixed(1)}
+                </span>
+            </div>
+
+            {expanded && (
+                <div className="param-detail" onClick={e => e.stopPropagation()}>
+                    <hr className="param-detail-divider" />
+
+                    {phrases.length > 0 && (
+                        <div className="param-detail-section">
+                            <span className="param-detail-label">Detected</span>
+                            <div className="phrase-tags">
+                                {phrases.map((p, i) => (
+                                    <span key={i} className="phrase-tag">{p}</span>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {sentimentImproved !== undefined && (
+                        <div className="param-detail-section">
+                            <span className="param-detail-label">Sentiment</span>
+                            <span className={`journey-badge ${sentimentImproved ? 'improved' : 'flat'}`}>
+                                {sentimentImproved ? 'Improved' : 'No change'}
+                            </span>
+                        </div>
+                    )}
+
+                    {status && (
+                        <div className="param-detail-section">
+                            <span className="param-detail-label">Outcome</span>
+                            <span className="outcome-text">{status}</span>
+                        </div>
+                    )}
+
+                    <div className="param-detail-section">
+                        <span className="param-detail-label">Raw</span>
+                        <span className="param-detail-value">{param.raw_value.toFixed(2)}</span>
+                    </div>
+                    <div className="param-detail-section">
+                        <span className="param-detail-label">Penalty</span>
+                        <span className="param-detail-value" style={{ color: param.penalty > 30 ? 'var(--warning)' : undefined }}>
+                            {param.penalty.toFixed(1)}
+                        </span>
+                    </div>
+
+                    {param.metadata?.phrase_count_high !== undefined && (
+                        <div className="phrase-counts">
+                            <span className="count-item high">High {param.metadata.phrase_count_high}</span>
+                            <span className="count-item med">Med {param.metadata.phrase_count_medium}</span>
+                            <span className="count-item low">Low {param.metadata.phrase_count_low}</span>
+                            {param.metadata.negative_phrases_detected > 0 && (
+                                <span className="count-item neg">Neg {param.metadata.negative_phrases_detected}</span>
+                            )}
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    )
+}
+
+const WeightSliders = ({ weights, onChange, disabled }) => {
+    const totalWeight = Object.values(weights).reduce((a, b) => a + b, 0)
+
+    return (
+        <div className="weight-sliders">
+            <div className="weight-sliders-header">
+                <h3>Weight Configuration</h3>
+                <span className="weight-total">Total: {totalWeight}</span>
+            </div>
+            <p className="weight-hint">Adjust how much each parameter affects the final score. Weights are auto-normalized.</p>
+            <div className="slider-grid">
+                {Object.entries(weights).map(([key, value]) => {
+                    const info = PARAM_INFO[key] || { label: key, icon: '•' }
+                    const normalized = totalWeight > 0 ? Math.round((value / totalWeight) * 100) : 0
+                    return (
+                        <div key={key} className="slider-item">
+                            <div className="slider-label-row">
+                                <span className="slider-icon">{info.icon}</span>
+                                <span className="slider-label">{info.label}</span>
+                                <span className="slider-value">{value} <span className="slider-pct">({normalized}%)</span></span>
+                            </div>
+                            <input
+                                type="range"
+                                min="0"
+                                max="100"
+                                value={value}
+                                onChange={e => onChange(key, parseInt(e.target.value))}
+                                className="weight-slider"
+                                disabled={disabled}
+                                aria-label={`${info.label} weight`}
+                            />
+                        </div>
+                    )
+                })}
+            </div>
+        </div>
+    )
+}
+
 function App() {
     const [file, setFile] = useState(null)
-    const [view, setView] = useState('landing') // landing, processing, dashboard
-    const [processingStep, setProcessingStep] = useState(0) // 0-4
+    const [view, setView] = useState('landing')
+    const [processingStep, setProcessingStep] = useState(0)
     const [result, setResult] = useState(null)
     const [error, setError] = useState(null)
+    const [theme, setTheme] = useState(() => {
+        const saved = localStorage.getItem('nanovox_theme')
+        if (saved) return saved
+        return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+    })
+
+    const [weights, setWeights] = useState(() => {
+        const saved = localStorage.getItem('nanovox_weights')
+        if (saved) try { return JSON.parse(saved) } catch { /* ignore */ }
+        return { ...DEFAULT_WEIGHTS }
+    })
+    const [analyzerResults, setAnalyzerResults] = useState(null)
+    const [rescoring, setRescoring] = useState(false)
+    const rescoreTimerRef = useRef(null)
+
+    useEffect(() => {
+        document.documentElement.setAttribute('data-theme', theme)
+        localStorage.setItem('nanovox_theme', theme)
+    }, [theme])
+
+    const toggleTheme = () => {
+        setTheme(t => t === 'dark' ? 'light' : 'dark')
+    }
+
+    const handleWeightChange = useCallback((key, value) => {
+        setWeights(prev => {
+            const next = { ...prev, [key]: value }
+            localStorage.setItem('nanovox_weights', JSON.stringify(next))
+            return next
+        })
+    }, [])
+
+    // Debounced rescore when weights change
+    useEffect(() => {
+        if (!analyzerResults || !result) return
+        if (rescoreTimerRef.current) clearTimeout(rescoreTimerRef.current)
+
+        rescoreTimerRef.current = setTimeout(async () => {
+            setRescoring(true)
+            try {
+                const resp = await fetch('http://127.0.0.1:8000/api/rescore', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ analyzer_results: analyzerResults, weights })
+                })
+                if (resp.ok) {
+                    const newAnalysis = await resp.json()
+                    if (!newAnalysis.error) {
+                        setResult(prev => ({
+                            ...prev,
+                            analysis: { ...newAnalysis, analyzer_results: analyzerResults }
+                        }))
+                    }
+                }
+            } catch (err) {
+                console.error('Rescore failed:', err)
+            } finally {
+                setRescoring(false)
+            }
+        }, 300)
+
+        return () => { if (rescoreTimerRef.current) clearTimeout(rescoreTimerRef.current) }
+    }, [weights, analyzerResults])
 
     const handleFileChange = (e) => {
         if (e.target.files && e.target.files[0]) {
@@ -37,42 +375,41 @@ function App() {
         }
     }
 
-    const formatSize = (bytes) => {
-        if (bytes === 0) return '0 Bytes';
-        const k = 1024;
-        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-    }
-
     const processCall = async () => {
-        if (!file) return;
+        if (!file) return
 
         setView('processing')
-        setProcessingStep(1) // Uploading
+        setProcessingStep(1)
 
         const formData = new FormData()
         formData.append('file', file)
+        formData.append('weights', JSON.stringify(weights))
 
         try {
-            // Simulate steps for visual effect
-            setTimeout(() => setProcessingStep(2), 1000) // Transcribing
-            setTimeout(() => setProcessingStep(3), 2500) // Analyzing Sentiment
+            setTimeout(() => setProcessingStep(2), 600)
+            setTimeout(() => setProcessingStep(3), 1400)
+            setTimeout(() => setProcessingStep(4), 2200)
+            setTimeout(() => setProcessingStep(5), 3000)
 
             const response = await fetch('http://127.0.0.1:8000/analyze', {
                 method: 'POST',
                 body: formData,
             })
 
-            if (!response.ok) throw new Error('Analysis failed')
+            if (!response.ok) throw new Error('Analysis failed. Please try again.')
 
             const data = await response.json()
 
-            setProcessingStep(4) // Generating Insights
+            // Store raw analyzer results for rescoring
+            if (data.analysis?.analyzer_results) {
+                setAnalyzerResults(data.analysis.analyzer_results)
+            }
+
+            setProcessingStep(6)
             setTimeout(() => {
                 setResult(data)
                 setView('dashboard')
-            }, 1000)
+            }, 500)
 
         } catch (err) {
             setError(err.message)
@@ -80,36 +417,53 @@ function App() {
         }
     }
 
-    // Calculate percentage for donut chart (using frustration as inverse of positive or sentiment score)
-    // Backend returns: customer_frustration (0-10). 
-    // Let's assume: 0 frustration = 100% Positive. 10 frustration = 0% Positive.
-    // Actually, let's use the sentiment label from backend if available, or map frustration.
-    // The mock shows "78% Positive".
     const getPositivePercent = () => {
-        if (!result) return 0;
-        // Map frustration (0-10) to Positive %
-        // 0 -> 100%, 5 -> 50%, 10 -> 0%
-        const score = Math.max(0, 10 - (result.customer_frustration || 0));
-        return Math.round((score / 10) * 100);
+        if (!result?.analysis?.breakdown?.sentiment) return 0
+        return Math.round(result.analysis.breakdown.sentiment.score)
     }
+
+    const STEPS = [
+        { label: 'Upload' },
+        { label: 'Transcribe' },
+        { label: 'Sentiment' },
+        { label: 'Analyze' },
+        { label: 'Score' },
+        { label: 'Done' },
+    ]
+
+    const STEP_STATUS = [
+        '',
+        'Uploading audio...',
+        'Transcribing audio...',
+        'Analyzing sentiment...',
+        'Processing parameters...',
+        'Calculating score...',
+        'Complete',
+    ]
 
     return (
         <div className="app-container">
+            <button
+                className="theme-toggle"
+                onClick={toggleTheme}
+                aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            >
+                {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
+            </button>
 
-            {/* 1. Landing Page View */}
             {view === 'landing' && (
                 <div className="landing-view">
                     <header className="main-header">
-                        <h1>Call Intelligence Dashboard</h1>
-                        <p>Analyze call sentiment, resolution status, and agent performance</p>
+                        <h1>NanoVox</h1>
+                        <p>Call intelligence and quality analysis</p>
                     </header>
 
                     <div className="upload-card">
-                        <div className="upload-area">
-                            <UploadIcon />
-                            <h3>Upload Audio File</h3>
-                            <p className="upload-hint">Drag and drop your audio file or click to browse</p>
-                            <p className="supported-formats">Supported formats: .wav, .mp3</p>
+                        <div className="upload-area" role="button" tabIndex={0} onClick={() => document.getElementById('file-upload').click()}>
+                            <UploadIcon aria-hidden="true" />
+                            <h3>Upload Audio</h3>
+                            <p className="upload-hint">Drop your file or click to browse</p>
+                            <p className="supported-formats">WAV, MP3, M4A, OGG</p>
 
                             <input
                                 type="file"
@@ -117,14 +471,14 @@ function App() {
                                 className="hidden-input"
                                 accept=".wav,.mp3,.m4a,.ogg"
                                 onChange={handleFileChange}
+                                aria-label="Upload audio file"
                             />
-                            <label htmlFor="file-upload" className="choose-btn">Choose File</label>
                         </div>
 
                         {file && (
                             <div className="file-preview">
                                 <div className="file-info-row">
-                                    <div className="file-icon-wrapper"><FileIcon /></div>
+                                    <div className="file-icon-wrapper"><FileIcon aria-hidden="true" /></div>
                                     <div className="file-details">
                                         <span className="filename">{file.name}</span>
                                         <span className="filesize">{formatSize(file.size)}</span>
@@ -133,95 +487,130 @@ function App() {
                             </div>
                         )}
 
+                        <div className="landing-profile-badge">
+                            <span className="profile-badge-icon">📞</span>
+                            <span>Sales Profile</span>
+                        </div>
+
                         {file && (
-                            <button className="process-btn" onClick={processCall}>
-                                Process Call
+                            <button
+                                id="process-call-btn"
+                                className="process-btn"
+                                onClick={processCall}
+                                aria-label="Start call analysis"
+                            >
+                                Analyze
                             </button>
                         )}
                     </div>
-                    {error && <div className="error-toast">{error}</div>}
+                    {error && <div className="error-toast" role="alert">{error}</div>}
                 </div>
             )}
 
-            {/* 2. Processing Overlay */}
             {view === 'processing' && (
-                <div className="processing-view">
+                <div className="processing-view" role="status" aria-live="polite">
                     <div className="processing-card">
                         <div className="spinner-container">
-                            <div className="spinner"></div>
+                            <div className="spinner" aria-hidden="true"></div>
                         </div>
-                        <h2>Processing Call Analysis</h2>
-                        <p className="processing-status">
-                            {processingStep === 1 && "Uploading..."}
-                            {processingStep === 2 && "Transcribing..."}
-                            {processingStep === 3 && "Analyzing Sentiment..."}
-                            {processingStep === 4 && "Generating Insights..."}
-                        </p>
+                        <h2>Processing</h2>
+                        <p className="processing-status">{STEP_STATUS[processingStep]}</p>
 
                         <div className="progress-bar-container">
-                            <div className="progress-bar" style={{ width: `${processingStep * 25}%` }}></div>
+                            <div className="progress-bar" style={{ width: `${(processingStep / 6) * 100}%` }}></div>
                         </div>
 
                         <div className="steps-container">
-                            <div className={`step-item ${processingStep > 1 ? 'completed' : 'active'}`}>
-                                <div className="step-circle">{processingStep > 1 ? <CheckIcon /> : 1}</div>
-                                <span>Uploading</span>
-                            </div>
-                            <div className={`step-item ${processingStep > 2 ? 'completed' : (processingStep === 2 ? 'active' : '')}`}>
-                                <div className="step-circle">{processingStep > 2 ? <CheckIcon /> : 2}</div>
-                                <span>Transcribing</span>
-                            </div>
-                            <div className={`step-item ${processingStep > 3 ? 'completed' : (processingStep === 3 ? 'active' : '')}`}>
-                                <div className="step-circle">{processingStep > 3 ? <CheckIcon /> : 3}</div>
-                                <span>Analyzing Sentiment</span>
-                            </div>
-                            <div className={`step-item ${processingStep === 4 ? 'active' : ''}`}>
-                                <div className="step-circle">4</div>
-                                <span>Generating Insights</span>
-                            </div>
+                            {STEPS.map((step, i) => {
+                                const stepNum = i + 1
+                                const isCompleted = processingStep > stepNum
+                                const isActive = processingStep === stepNum
+                                return (
+                                    <div key={step.label} className={`step-item ${isCompleted ? 'completed' : isActive ? 'active' : ''}`}>
+                                        <div className="step-circle">
+                                            {isCompleted ? <CheckIcon /> : stepNum}
+                                        </div>
+                                        <span>{step.label}</span>
+                                    </div>
+                                )
+                            })}
                         </div>
                     </div>
                 </div>
             )}
 
-            {/* 3. Dashboard View */}
             {view === 'dashboard' && result && (
                 <div className="dashboard-view">
                     <header className="dashboard-header">
-                        <h1>Call Intelligence Dashboard</h1>
-                        <p>Analyze call sentiment, resolution status, and agent performance</p>
+                        <div className="dashboard-header-row">
+                            <div>
+                                <h1>Analysis</h1>
+                                <p>Call quality breakdown</p>
+                            </div>
+                            <button
+                                className="new-call-btn"
+                                onClick={() => { setView('landing'); setFile(null); setResult(null); setAnalyzerResults(null) }}
+                                aria-label="Start new call analysis"
+                            >
+                                New
+                            </button>
+                        </div>
                     </header>
 
-                    {/* Transcript Section */}
+                    {result.analysis && (
+                        <div className="analysis-section">
+                            <ScoreCard analysis={result.analysis} />
+
+                            <WeightSliders
+                                weights={weights}
+                                onChange={handleWeightChange}
+                                disabled={rescoring}
+                            />
+                            {rescoring && <div className="rescore-indicator">Recalculating...</div>}
+
+                            {result.analysis.breakdown && Object.keys(result.analysis.breakdown).length > 0 && (
+                                <div className="param-breakdown">
+                                    <h2 className="breakdown-title">Parameters</h2>
+                                    <div className="param-grid">
+                                        {Object.entries(result.analysis.breakdown).map(([key, param]) => (
+                                            <ParameterCard key={key} paramKey={key} param={param} />
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     <div className="transcript-section">
-                        <div className="transcript-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                        <div className="transcript-header">
                             <h3>Transcript</h3>
                             <button
+                                id="save-transcript-btn"
                                 onClick={() => {
-                                    if (!result?.transcription?.transcript) return;
+                                    if (!result?.transcription?.transcript) return
                                     const text = result.transcription.transcript
                                         .map(seg => `[${Math.floor(seg.start / 60)}:${Math.floor(seg.start % 60).toString().padStart(2, '0')}] ${seg.speaker}: ${seg.text}`)
-                                        .join('\n\n');
-                                    const blob = new Blob([text], { type: 'text/plain' });
-                                    const url = URL.createObjectURL(blob);
-                                    const a = document.createElement('a');
-                                    a.href = url;
-                                    a.download = `transcript-${new Date().toISOString().slice(0, 10)}.txt`;
-                                    document.body.appendChild(a);
-                                    a.click();
-                                    document.body.removeChild(a);
-                                    URL.revokeObjectURL(url);
+                                        .join('\n\n')
+                                    const blob = new Blob([text], { type: 'text/plain' })
+                                    const url = URL.createObjectURL(blob)
+                                    const a = document.createElement('a')
+                                    a.href = url
+                                    a.download = `transcript-${new Date().toISOString().slice(0, 10)}.txt`
+                                    document.body.appendChild(a)
+                                    a.click()
+                                    document.body.removeChild(a)
+                                    URL.revokeObjectURL(url)
                                 }}
-                                className="process-btn"
-                                style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', width: 'auto' }}
+                                className="save-btn"
+                                aria-label="Download transcript"
                             >
-                                Save Transcript
+                                Export
                             </button>
                         </div>
                         <div className="transcript-container">
-                            {result.transcription && result.transcription.transcript && result.transcription.transcript.map((seg, idx) => (
+                            {result.transcription?.transcript?.map((seg, idx) => (
                                 <div key={idx} className={`chat-bubble-row ${seg.speaker.toLowerCase()}`}>
-                                    <div className="speaker-avatar">
+                                    <div className="speaker-avatar" aria-label={seg.speaker}>
                                         {seg.speaker === 'Customer' ? 'C' : 'A'}
                                     </div>
                                     <div className="chat-bubble">
@@ -230,8 +619,6 @@ function App() {
                                             <span className="timestamp">
                                                 {Math.floor(seg.start / 60)}:{Math.floor(seg.start % 60).toString().padStart(2, '0')}
                                             </span>
-                                            {/* Placeholder confidence/sentiment since segment-level sentiment isn't stored yet */}
-                                            <span className="meta-tag">{(seg.speaker === 'Customer' && result.insights.customer_frustration > 5) ? 'Negative' : 'Neutral'}</span>
                                         </div>
                                     </div>
                                 </div>
@@ -239,15 +626,12 @@ function App() {
                         </div>
                     </div>
 
-                    {/* Metrics Grid */}
                     <div className="metrics-grid">
-
-                        {/* Left Card: Overall Sentiment */}
                         <div className="metric-card sentiment-card">
-                            <h3>Overall Sentiment</h3>
+                            <h3>Sentiment</h3>
                             <div className="donut-chart-wrapper">
                                 <div className="donut-chart" style={{
-                                    background: `conic-gradient(#22c55e 0% ${getPositivePercent()}%, #374151 ${getPositivePercent()}% 100%)`
+                                    background: `conic-gradient(var(--gradient-start) 0% ${getPositivePercent()}%, var(--bg-surface) ${getPositivePercent()}% 100%)`
                                 }}>
                                     <div className="donut-hole">
                                         <span className="donut-percent">{getPositivePercent()}%</span>
@@ -256,49 +640,40 @@ function App() {
                                 </div>
                             </div>
                             <div className="chart-legend">
-                                <div className="legend-item"><span className="dot negative"></span>Negative</div>
-                                <div className="legend-item"><span className="dot neutral"></span>Neutral</div>
-                                <div className="legend-item"><span className="dot positive"></span>Positive</div>
+                                <div className="legend-item"><span className="dot positive" aria-hidden="true"></span>Positive</div>
+                                <div className="legend-item"><span className="dot neutral" aria-hidden="true"></span>Neutral</div>
                             </div>
                         </div>
 
-                        {/* Right Card: Call Summary */}
                         <div className="metric-card summary-card">
-                            <h3>Call Summary</h3>
+                            <h3>Summary</h3>
                             <div className="summary-grid">
                                 <div className="summary-item">
-                                    <label>Resolution Status</label>
-                                    <span className="summary-value white">
-                                        {result.insights.call_resolution ? 'Resolved' : 'Unresolved'}
+                                    <label>Resolution</label>
+                                    <span className="summary-value">
+                                        {result.analysis?.breakdown?.resolution?.metadata?.status || 'Unknown'}
                                     </span>
                                 </div>
                                 <div className="summary-item">
-                                    <label>Transcript Length</label>
-                                    <span className="summary-value white">
-                                        {result.transcription.transcript ? result.transcription.transcript.length : 0} exchanges
+                                    <label>Exchanges</label>
+                                    <span className="summary-value">
+                                        {result.transcription?.transcript?.length || 0}
                                     </span>
                                 </div>
                                 <div className="summary-item">
-                                    <label>Avg Sentiment</label>
+                                    <label>Sentiment</label>
                                     <span className="summary-value blue">{getPositivePercent()}%</span>
                                 </div>
                                 <div className="summary-item">
-                                    <label>Coaching Tips</label>
-                                    <span className="summary-value white">3 items</span>
+                                    <label>Score</label>
+                                    <span
+                                        className="summary-value"
+                                        style={{ color: result.analysis?.final_score ? getScoreColor(result.analysis.final_score) : undefined }}
+                                    >
+                                        {result.analysis?.final_score ? result.analysis.final_score.toFixed(0) : '—'}
+                                    </span>
                                 </div>
                             </div>
-                        </div>
-
-                    </div>
-
-                    {/* Re-upload Area (Mock show it at the bottom too) */}
-                    <div className="upload-card small-upload">
-                        <div className="upload-area sm">
-                            <UploadIcon />
-                            <h3>Upload Audio File</h3>
-                            <p className="upload-hint">Drag and drop your audio file or click to browse</p>
-                            <label htmlFor="file-upload-2" className="choose-btn">Choose File</label>
-                            <input type="file" id="file-upload-2" className="hidden-input" onChange={handleFileChange} />
                         </div>
                     </div>
 

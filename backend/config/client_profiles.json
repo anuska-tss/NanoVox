@@ -1,0 +1,16 @@
+{
+    "sales": {
+        "name": "Sales",
+        "description": "Optimized for closing deals — resolution matters most",
+        "weights": {
+            "talk_ratio": 10,
+            "sentiment": 20,
+            "empathy": 10,
+            "resolution": 60
+        },
+        "ideal_talk_ratio": [
+            0.60,
+            0.70
+        ]
+    }
+}
