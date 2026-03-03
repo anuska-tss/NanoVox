@@ -42,3 +42,6 @@ dist/
 # Logs
 *.log
 npm-debug.log*
+
+# Database
+*.db

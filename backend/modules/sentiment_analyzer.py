@@ -4,9 +4,12 @@ Customer Sentiment Analyzer
 Uses VADER to measure customer frustration, with tiered penalties
 and a sentiment-journey bonus that rewards de-escalation.
 
-WHY tiered penalties: A frustration of 8 is far worse than 4, so the
-penalty curve accelerates — low frustration barely hurts, but high
-frustration hammers the score.
+WHY the journey bonus is primary backup: In a complaints context the most
+important outcome is whether the agent turned a frustrated customer around.
+When the resolution_analyzer returns a neutral score (net_score == 0),
+a strong de-escalation (Negative → Positive sentiment journey) must still
+produce a positive overall result. This bonus therefore applies an AGGRESSIVE
+penalty reduction (up to 60%) instead of the original 30%.
 """
 import logging
 from models import ParameterResult
@@ -17,6 +20,12 @@ logger = logging.getLogger(__name__)
 def analyze(transcript: list, profile_config: dict, vader_analyzer=None) -> ParameterResult:
     """
     Analyze customer sentiment using VADER and compute frustration-based penalty.
+
+    Sentiment Journey Bonus (primary backup when resolution is neutral):
+      - Improvement threshold: end_avg > start_avg + 0.3  (original 30% reduction)
+      - Strong improvement:    end_avg > start_avg + 0.6  → 60% penalty reduction
+        This ensures that a clear de-escalation heavily influences the final
+        parameter result even when the resolution_analyzer score is neutral.
 
     Args:
         transcript: List of segments with 'speaker' and 'text'
@@ -69,16 +78,20 @@ def analyze(transcript: list, profile_config: dict, vader_analyzer=None) -> Para
 
     # Tiered penalty calculation
     if avg_frustration <= 3.0:
-        base_penalty = avg_frustration * 5.0  # max 15
+        base_penalty = avg_frustration * 5.0          # max 15
     elif avg_frustration <= 6.0:
-        base_penalty = 15.0 + (avg_frustration - 3.0) * 10.0  # 15-45 range
+        base_penalty = 15.0 + (avg_frustration - 3.0) * 10.0  # 15–45 range
     else:
-        base_penalty = 45.0 + (avg_frustration - 6.0) * 13.75  # 45-100 range
+        base_penalty = 45.0 + (avg_frustration - 6.0) * 13.75  # 45–100 range
 
     base_penalty = min(100.0, max(0.0, base_penalty))
 
-    # Sentiment journey bonus: compare first vs last segments
+    # ── Sentiment Journey Bonus — PRIMARY BACKUP for neutral resolution ──
+    # Compare first 3 vs last 3 customer segments to detect de-escalation.
+    # A strong improvement (Negative → Positive) applies an aggressive
+    # 60% penalty reduction, ensuring it can override a neutral resolution score.
     sentiment_improved = False
+    journey_bonus_level = "none"
     n = len(segment_compounds)
     take = min(3, n)
 
@@ -88,11 +101,26 @@ def analyze(transcript: list, profile_config: dict, vader_analyzer=None) -> Para
     start_avg = sum(start_compounds) / len(start_compounds)
     end_avg = sum(end_compounds) / len(end_compounds)
 
-    # If end sentiment improved by 0.3+ → 30% penalty reduction
-    if end_avg > start_avg + 0.3:
+    delta = end_avg - start_avg
+
+    if delta > 0.6:
+        # Strong de-escalation: 60% penalty reduction (primary backup)
         sentiment_improved = True
+        journey_bonus_level = "strong"
+        final_penalty = base_penalty * 0.4
+        logger.info(
+            f"Sentiment journey STRONG bonus applied (Δ={delta:.2f}): "
+            f"{base_penalty:.1f} → {final_penalty:.1f}"
+        )
+    elif delta > 0.3:
+        # Moderate improvement: 30% penalty reduction (original behaviour)
+        sentiment_improved = True
+        journey_bonus_level = "moderate"
         final_penalty = base_penalty * 0.7
-        logger.info(f"Sentiment journey bonus applied: {base_penalty:.1f} → {final_penalty:.1f}")
+        logger.info(
+            f"Sentiment journey moderate bonus applied (Δ={delta:.2f}): "
+            f"{base_penalty:.1f} → {final_penalty:.1f}"
+        )
     else:
         final_penalty = base_penalty
 
@@ -101,7 +129,7 @@ def analyze(transcript: list, profile_config: dict, vader_analyzer=None) -> Para
 
     logger.info(
         f"Sentiment: frustration={avg_frustration:.2f}/10 | "
-        f"Penalty: {final_penalty} | Improved: {sentiment_improved}"
+        f"Penalty: {final_penalty} | Journey bonus: {journey_bonus_level}"
     )
 
     return ParameterResult(
@@ -113,8 +141,10 @@ def analyze(transcript: list, profile_config: dict, vader_analyzer=None) -> Para
         penalty=final_penalty,
         metadata={
             "sentiment_improved": sentiment_improved,
+            "journey_bonus_level": journey_bonus_level,
             "start_sentiment": round(start_avg, 3),
             "end_sentiment": round(end_avg, 3),
+            "sentiment_delta": round(delta, 3),
             "segment_count": n,
             "context_text": f"Customer frustration: {avg_frustration:.1f}/10"
         }

@@ -1,8 +1,10 @@
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from typing import Dict, List, Optional
 import logging
 import json
+import io
 import whisper
 import tempfile
 import os
@@ -13,6 +15,8 @@ from pydantic import BaseModel
 from modules import talk_ratio_analyzer, sentiment_analyzer, empathy_analyzer, resolution_analyzer
 from scoring_engine import calculate_score
 from parameter_registry import get_available_parameters, load_profile_config, get_default_weights
+from database import init_db, save_call, get_history, get_call_detail, get_stats
+from report_generator import generate_report
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -69,6 +73,10 @@ async def load_models():
     from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
     vader_analyzer = SentimentIntensityAnalyzer()
     logger.info("VADER analyzer initialized!")
+
+    # Initialize SQLite database
+    init_db()
+    logger.info("Database initialized!")
 
 
 def _run_analyzers(transcript: list, profile_config: dict) -> list:
@@ -198,6 +206,86 @@ class RescoreRequest(BaseModel):
     weights: Dict[str, float]
 
 
+class TestAnalysisRequest(BaseModel):
+    """
+    Request body for the /api/test-analysis endpoint.
+
+    Allows direct scoring-engine testing without an audio file.
+    The transcript segments must match the format produced by Whisper +
+    the speaker-attribution step:
+
+        [
+          {"speaker": "Agent",    "start": 0.0,  "end": 5.2,  "text": "..."},
+          {"speaker": "Customer", "start": 5.4,  "end": 10.1, "text": "..."}
+        ]
+
+    Weights should sum to 100 and use the canonical parameter names
+    (talk_ratio, sentiment, empathy, resolution).
+    """
+    transcript: List[dict]
+    weights: Optional[Dict[str, float]] = None
+    profile: Optional[str] = "complaints"
+
+
+@app.post("/api/test-analysis")
+async def test_analysis(request: TestAnalysisRequest) -> Dict:
+    """
+    Run the full scoring pipeline on a manually supplied transcript.
+
+    Bypasses Whisper transcription entirely — useful for:
+      • Unit-testing the scoring engine with controlled inputs
+      • Validating complaints vs sales profile weight differences
+      • Debugging analyzer logic without an audio file
+
+    Body:
+        transcript: list of {speaker, start, end, text} dicts
+        weights:    optional custom weights (overrides profile defaults)
+        profile:    'complaints' | 'sales'  (default: 'complaints')
+    """
+    logger.info(
+        f"🧪 /api/test-analysis hit — "
+        f"{len(request.transcript)} segments, profile='{request.profile}'"
+    )
+
+    if not request.transcript:
+        return {"error": "transcript must not be empty"}
+
+    try:
+        profile_config = load_profile_config(request.profile or "complaints")
+
+        # Run all four analyzers against the supplied transcript
+        loop = asyncio.get_event_loop()
+        analyzer_results = await loop.run_in_executor(
+            _executor, _run_analyzers, request.transcript, profile_config
+        )
+
+        # Use supplied weights → profile defaults → built-in defaults
+        scoring_weights = (
+            request.weights
+            if request.weights
+            else profile_config.get("weights", get_default_weights(request.profile or "complaints"))
+        )
+
+        call_score = calculate_score(
+            analyzer_results,
+            scoring_weights,
+            profile_config["name"]
+        )
+
+        result = call_score.model_dump()
+        result["analyzer_results"] = [r.model_dump() for r in analyzer_results]
+        result["scoring_weights_used"] = scoring_weights
+        result["profile_used"] = profile_config["name"]
+        result["segment_count"] = len(request.transcript)
+
+        logger.info(f"Test analysis complete: {call_score.final_score}/100")
+        return result
+
+    except Exception as e:
+        logger.error(f"Test analysis failed: {e}", exc_info=True)
+        return {"error": str(e), "message": "Test analysis failed"}
+
+
 @app.post("/api/rescore")
 async def rescore(request: RescoreRequest) -> Dict:
     """
@@ -257,38 +345,102 @@ async def analyze_audio(
         result = whisper_model.transcribe(temp_file_path)
         logger.info("Transcription complete!")
 
-        # Heuristic speaker attribution
-        def attribute_speaker(segment_text: str, segment_index: int, previous_speaker: str) -> str:
-            text_lower = segment_text.lower()
+        # ── Global Weighted Voting Speaker Attribution ──
+        def identify_speakers(whisper_segments: list) -> list:
+            """
+            Global Weighted Voting System for speaker attribution.
+            Instead of labeling each segment independently, this:
+            1. Groups segments into two alternating speakers (0 and 1)
+            2. Scores each speaker globally using signal libraries
+            3. Applies structural bonuses (Anchor, Closer)
+            4. Maps the higher-scoring speaker to 'Agent'
+            """
+            if not whisper_segments:
+                return []
 
-            complaint_keywords = ['problem', 'issue', 'angry', 'frustrated', 'complaint',
-                                 'upset', 'disappointed', 'terrible', 'awful', 'bad']
-            if any(keyword in text_lower for keyword in complaint_keywords):
-                return "Customer"
+            # ── Signal Libraries ──
+            AGENT_SIGNALS = [
+                'speaking', 'calling from', 'timeline', 'decision maker',
+                'budget', 'our solution', 'calendar', 'invite', 'meeting',
+                'contract', 'agreement', 'certainly', 'my pleasure',
+                'absolutely', 'welcome', 'helping', 'demonstration',
+                'benefits', 'features', 'integration',
+            ]
 
-            agent_keywords = ['help', 'assist', 'sorry', 'apologize', 'understand',
-                            'resolve', 'fix', 'support', 'service', 'thank you for']
-            if any(keyword in text_lower for keyword in agent_keywords):
-                return "Agent"
+            CUSTOMER_SIGNALS = [
+                'calling about', 'problem with', 'expensive', 'too much',
+                'fix this', 'broken', 'frustrated', 'can it do',
+                'not interested', 'help me', 'looking for', 'does it have',
+                'comparison', 'budget constraints',
+            ]
 
-            if segment_index == 0:
-                return "Agent"
+            # ── Step 1: Assign alternating speaker IDs ──
+            # In a conversation, speakers typically alternate turns
+            speaker_ids = []
+            current_id = 0
+            for i, seg in enumerate(whisper_segments):
+                if i == 0:
+                    speaker_ids.append(current_id)
+                else:
+                    # Check for a natural speaker change via pause gap
+                    gap = seg["start"] - whisper_segments[i - 1]["end"]
+                    if gap > 0.3:
+                        # Likely a speaker change if there's a pause
+                        current_id = 1 - current_id
+                    # else: same speaker continues (no flip)
+                    speaker_ids.append(current_id)
+
+            # ── Step 2: Score each speaker globally ──
+            scores = {0: 0, 1: 0}
+
+            for i, seg in enumerate(whisper_segments):
+                text_lower = seg["text"].lower()
+                sid = speaker_ids[i]
+
+                # Count agent signal matches
+                for signal in AGENT_SIGNALS:
+                    if signal in text_lower:
+                        scores[sid] += 1
+
+                # Count customer signal matches (add to the OTHER speaker's agent score)
+                for signal in CUSTOMER_SIGNALS:
+                    if signal in text_lower:
+                        # Customer signals REDUCE this speaker's agent likelihood
+                        scores[sid] -= 1
+
+            # ── Step 3: Apply structural weights ──
+            # Anchor bonus: first speaker gets +12 (agent usually initiates)
+            anchor_id = speaker_ids[0]
+            scores[anchor_id] += 12
+
+            # Closer bonus: last speaker gets +6
+            closer_id = speaker_ids[-1]
+            scores[closer_id] += 6
+
+            # ── Step 4: Global assignment ──
+            if scores[0] >= scores[1]:
+                speaker_map = {0: "Agent", 1: "Customer"}
             else:
-                return "Customer" if previous_speaker == "Agent" else "Agent"
+                speaker_map = {0: "Customer", 1: "Agent"}
 
-        # Build transcript with speaker attribution
-        transcript = []
-        previous_speaker = None
+            logger.info(
+                f"Speaker attribution: ID0={scores[0]} pts, ID1={scores[1]} pts | "
+                f"Mapping: 0→{speaker_map[0]}, 1→{speaker_map[1]}"
+            )
 
-        for idx, segment in enumerate(result["segments"]):
-            speaker = attribute_speaker(segment["text"], idx, previous_speaker)
-            transcript.append({
-                "speaker": speaker,
-                "start": segment["start"],
-                "end": segment["end"],
-                "text": segment["text"].strip()
-            })
-            previous_speaker = speaker
+            # ── Build labeled transcript ──
+            transcript = []
+            for i, seg in enumerate(whisper_segments):
+                transcript.append({
+                    "speaker": speaker_map[speaker_ids[i]],
+                    "start": seg["start"],
+                    "end": seg["end"],
+                    "text": seg["text"].strip()
+                })
+
+            return transcript
+
+        transcript = identify_speakers(result["segments"])
 
         # ── Step 2: Legacy insights (backward compatibility) ──
         try:
@@ -345,12 +497,69 @@ async def analyze_audio(
             "analysis": analysis
         }
 
+        # ── Step 5: Save to database ──
+        try:
+            call_id = save_call(
+                filename=file.filename,
+                file_size_bytes=file_size_bytes,
+                response=response,
+                weights=locals().get('scoring_weights')
+            )
+            response["call_id"] = call_id
+            logger.info(f"Call saved to database with ID {call_id}")
+        except Exception as e:
+            logger.error(f"Failed to save call to database: {e}", exc_info=True)
+            # Don't fail the request if DB save fails
+
         return response
 
     finally:
         if os.path.exists(temp_file_path):
             os.unlink(temp_file_path)
             logger.info("Temporary file cleaned up")
+
+
+@app.get("/api/history")
+async def api_history(limit: int = 10, offset: int = 0) -> List[Dict]:
+    """Get recent analyzed calls, most recent first."""
+    return get_history(limit=limit, offset=offset)
+
+
+@app.get("/api/history/{call_id}")
+async def api_call_detail(call_id: int) -> Dict:
+    """Get full detail for a specific analyzed call."""
+    result = get_call_detail(call_id)
+    if result is None:
+        return {"error": "Call not found"}
+    return result
+
+
+@app.get("/api/stats")
+async def api_stats() -> Dict:
+    """Get aggregate stats across all analyzed calls."""
+    return get_stats()
+
+
+@app.get("/api/report/{call_id}")
+async def api_report(call_id: int):
+    """Generate and stream a PDF report for a specific analyzed call."""
+    call_data = get_call_detail(call_id)
+    if call_data is None:
+        return {"error": "Call not found"}
+
+    try:
+        pdf_bytes = generate_report(call_data)
+        filename = call_data.get("filename", "report").rsplit('.', 1)[0]
+        return StreamingResponse(
+            io.BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="NanoVox_{filename}_report.pdf"'
+            }
+        )
+    except Exception as e:
+        logger.error(f"PDF generation failed: {e}", exc_info=True)
+        return {"error": f"Report generation failed: {str(e)}"}
 
 
 if __name__ == "__main__":

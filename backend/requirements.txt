@@ -5,3 +5,4 @@ openai-whisper==20231117
 torch==2.5.1
 torchaudio==2.5.1
 vaderSentiment==3.3.2
+fpdf2==2.8.6

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+﻿import { useState, useEffect, useCallback, useRef } from 'react'
 import './App.css'
 
 const SunIcon = () => (
@@ -61,13 +61,13 @@ const ChevronIcon = ({ open }) => (
     </svg>
 )
 
-const DEFAULT_WEIGHTS = { talk_ratio: 10, sentiment: 20, empathy: 10, resolution: 60 }
+const DEFAULT_WEIGHTS = { talk_ratio: 5, sentiment: 30, empathy: 15, resolution: 50 }
 
 const PARAM_INFO = {
-    talk_ratio: { label: 'Talk Ratio', icon: '🎙️' },
-    sentiment: { label: 'Sentiment', icon: '😊' },
+    talk_ratio: { label: 'Talk Ratio', icon: '🗣️' },
+    sentiment: { label: 'Sentiment', icon: '🎭' },
     empathy: { label: 'Empathy', icon: '🤝' },
-    resolution: { label: 'Resolution', icon: '✅' },
+    resolution: { label: 'Resolution Status', icon: '✅' },
 }
 
 const formatSize = (bytes) => {
@@ -311,13 +311,21 @@ function App() {
     })
 
     const [weights, setWeights] = useState(() => {
-        const saved = localStorage.getItem('nanovox_weights')
-        if (saved) try { return JSON.parse(saved) } catch { /* ignore */ }
+        // Always use Complaints defaults; ignore any stale Sales weights in storage
         return { ...DEFAULT_WEIGHTS }
     })
     const [analyzerResults, setAnalyzerResults] = useState(null)
     const [rescoring, setRescoring] = useState(false)
     const rescoreTimerRef = useRef(null)
+
+    // History state
+    const [history, setHistory] = useState([])
+    const [stats, setStats] = useState(null)
+    const [historyLoading, setHistoryLoading] = useState(false)
+
+    // Developer Test Mode
+    const [isTestMode, setIsTestMode] = useState(false)
+    const [manualTranscriptJson, setManualTranscriptJson] = useState('')
 
     useEffect(() => {
         document.documentElement.setAttribute('data-theme', theme)
@@ -326,6 +334,27 @@ function App() {
 
     const toggleTheme = () => {
         setTheme(t => t === 'dark' ? 'light' : 'dark')
+    }
+
+    const fetchHistory = async () => {
+        setHistoryLoading(true)
+        try {
+            const [histRes, statsRes] = await Promise.all([
+                fetch('http://localhost:8000/api/history?limit=20'),
+                fetch('http://localhost:8000/api/stats')
+            ])
+            if (histRes.ok) setHistory(await histRes.json())
+            if (statsRes.ok) setStats(await statsRes.json())
+        } catch (e) {
+            console.error('Failed to fetch history:', e)
+        } finally {
+            setHistoryLoading(false)
+        }
+    }
+
+    const openHistory = () => {
+        setView('history')
+        fetchHistory()
     }
 
     const handleWeightChange = useCallback((key, value) => {
@@ -376,6 +405,67 @@ function App() {
     }
 
     const processCall = async () => {
+        setError(null)
+
+        // ── Test Mode: POST JSON transcript directly to /api/test-analysis ──
+        if (isTestMode) {
+            if (!manualTranscriptJson.trim()) {
+                setError('Please paste a JSON transcript before analyzing.')
+                return
+            }
+            let parsedTranscript
+            try {
+                parsedTranscript = JSON.parse(manualTranscriptJson)
+            } catch {
+                setError('Invalid JSON — please check the transcript format and try again.')
+                return
+            }
+            if (!Array.isArray(parsedTranscript) || parsedTranscript.length === 0) {
+                setError('Transcript must be a non-empty JSON array of segment objects.')
+                return
+            }
+
+            setView('processing')
+            setProcessingStep(3) // skip Upload + Transcribe steps visually
+            setTimeout(() => setProcessingStep(4), 400)
+            setTimeout(() => setProcessingStep(5), 900)
+
+            try {
+                const response = await fetch('http://127.0.0.1:8000/api/test-analysis', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        transcript: parsedTranscript,
+                        weights,
+                        profile: 'complaints',
+                    }),
+                })
+                if (!response.ok) throw new Error('Test analysis request failed.')
+                const data = await response.json()
+                if (data.error) throw new Error(data.message || data.error)
+
+                if (data.analyzer_results) setAnalyzerResults(data.analyzer_results)
+
+                setProcessingStep(6)
+                setTimeout(() => {
+                    // Shape the response to match the dashboard expectations
+                    setResult({
+                        filename: 'manual-transcript.json',
+                        file_size_bytes: manualTranscriptJson.length,
+                        transcription: { text: '', transcript: parsedTranscript },
+                        insights: {},
+                        analysis: data,
+                    })
+                    setView('dashboard')
+                }, 400)
+            } catch (err) {
+                setError(err.message)
+                setView('landing')
+            }
+            return
+        }
+
+        // ── Normal Mode: upload audio file → /analyze ──
         if (!file) return
 
         setView('processing')
@@ -443,243 +533,390 @@ function App() {
 
     return (
         <div className="app-container">
-            <button
-                className="theme-toggle"
-                onClick={toggleTheme}
-                aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-            >
-                {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
-            </button>
-
-            {view === 'landing' && (
-                <div className="landing-view">
-                    <header className="main-header">
-                        <h1>NanoVox</h1>
-                        <p>Call intelligence and quality analysis</p>
-                    </header>
-
-                    <div className="upload-card">
-                        <div className="upload-area" role="button" tabIndex={0} onClick={() => document.getElementById('file-upload').click()}>
-                            <UploadIcon aria-hidden="true" />
-                            <h3>Upload Audio</h3>
-                            <p className="upload-hint">Drop your file or click to browse</p>
-                            <p className="supported-formats">WAV, MP3, M4A, OGG</p>
-
-                            <input
-                                type="file"
-                                id="file-upload"
-                                className="hidden-input"
-                                accept=".wav,.mp3,.m4a,.ogg"
-                                onChange={handleFileChange}
-                                aria-label="Upload audio file"
-                            />
-                        </div>
-
-                        {file && (
-                            <div className="file-preview">
-                                <div className="file-info-row">
-                                    <div className="file-icon-wrapper"><FileIcon aria-hidden="true" /></div>
-                                    <div className="file-details">
-                                        <span className="filename">{file.name}</span>
-                                        <span className="filesize">{formatSize(file.size)}</span>
-                                    </div>
-                                </div>
-                            </div>
-                        )}
-
-                        <div className="landing-profile-badge">
-                            <span className="profile-badge-icon">📞</span>
-                            <span>Sales Profile</span>
-                        </div>
-
-                        {file && (
-                            <button
-                                id="process-call-btn"
-                                className="process-btn"
-                                onClick={processCall}
-                                aria-label="Start call analysis"
-                            >
-                                Analyze
-                            </button>
-                        )}
+            {/* ── Global Sticky Header ── */}
+            <header className="global-header">
+                <div className="global-header-inner">
+                    <div className="global-header-left">
+                        <h1 className="brand-logo" onClick={() => { setView('landing'); setFile(null); setResult(null); setAnalyzerResults(null) }}>
+                            NanoVox
+                        </h1>
+                        <span className="brand-tag">Call QA</span>
                     </div>
-                    {error && <div className="error-toast" role="alert">{error}</div>}
+                    <div className="global-header-right">
+                        <button className="header-btn header-btn-ghost" onClick={openHistory} aria-label="View call history">
+                            📊 History
+                        </button>
+                        <button className="header-btn header-btn-primary" onClick={() => { setView('landing'); setFile(null); setResult(null); setAnalyzerResults(null) }} aria-label="Start new analysis">
+                            ➕ New Analysis
+                        </button>
+                        <button className="theme-toggle" onClick={toggleTheme} aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}>
+                            {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
+                        </button>
+                    </div>
                 </div>
-            )}
+            </header>
 
-            {view === 'processing' && (
-                <div className="processing-view" role="status" aria-live="polite">
-                    <div className="processing-card">
-                        <div className="spinner-container">
-                            <div className="spinner" aria-hidden="true"></div>
-                        </div>
-                        <h2>Processing</h2>
-                        <p className="processing-status">{STEP_STATUS[processingStep]}</p>
+            <main className="app-main">
 
-                        <div className="progress-bar-container">
-                            <div className="progress-bar" style={{ width: `${(processingStep / 6) * 100}%` }}></div>
+                {view === 'landing' && (
+                    <div className="landing-view">
+                        <div className="landing-hero">
+                            <h2>Analyze a Complaint Call</h2>
+                            <p>Upload an audio file to get AI-powered quality insights</p>
                         </div>
 
-                        <div className="steps-container">
-                            {STEPS.map((step, i) => {
-                                const stepNum = i + 1
-                                const isCompleted = processingStep > stepNum
-                                const isActive = processingStep === stepNum
-                                return (
-                                    <div key={step.label} className={`step-item ${isCompleted ? 'completed' : isActive ? 'active' : ''}`}>
-                                        <div className="step-circle">
-                                            {isCompleted ? <CheckIcon /> : stepNum}
+                        <div className="landing-columns">
+                            {/* ── Upload Card ── */}
+                            <div className="upload-card glass-card">
+
+                                {/* Mode toggle */}
+                                <div className="test-mode-toggle">
+                                    <span className="test-mode-label">🧪 Dev Test Mode</span>
+                                    <button
+                                        id="test-mode-btn"
+                                        className={`toggle-switch ${isTestMode ? 'active' : ''}`}
+                                        onClick={() => { setIsTestMode(m => !m); setError(null) }}
+                                        aria-pressed={isTestMode}
+                                        aria-label="Toggle developer test mode"
+                                    >
+                                        <span className="toggle-knob" />
+                                    </button>
+                                </div>
+
+                                {isTestMode ? (
+                                    /* ── Test Mode: JSON textarea ── */
+                                    <div className="json-input-wrapper">
+                                        <textarea
+                                            id="json-transcript-input"
+                                            className="json-textarea glass-card"
+                                            value={manualTranscriptJson}
+                                            onChange={e => setManualTranscriptJson(e.target.value)}
+                                            placeholder={`Paste your JSON transcript array here...\n\nExample:\n[\n  { "speaker": "Agent", "start": 0.0, "end": 4.0, "text": "How can I help?" },\n  { "speaker": "Customer", "start": 4.2, "end": 9.0, "text": "My order is broken!" }\n]`}
+                                            aria-label="JSON transcript input"
+                                            rows={10}
+                                            spellCheck={false}
+                                        />
+                                        <p className="json-hint">Array of <code>{'{speaker, start, end, text}'}</code> objects</p>
+                                    </div>
+                                ) : (
+                                    /* ── Normal Mode: file uploader ── */
+                                    <>
+                                        <div className="upload-area" role="button" tabIndex={0}
+                                            onClick={() => document.getElementById('file-upload').click()}
+                                            onKeyDown={e => e.key === 'Enter' && document.getElementById('file-upload').click()}>
+                                            <UploadIcon aria-hidden="true" />
+                                            <h3>Upload Audio</h3>
+                                            <p className="upload-hint">Drop your file or click to browse</p>
+                                            <p className="supported-formats">WAV, MP3, M4A, OGG</p>
+                                            <input
+                                                type="file"
+                                                id="file-upload"
+                                                className="hidden-input"
+                                                accept=".wav,.mp3,.m4a,.ogg"
+                                                onChange={handleFileChange}
+                                                aria-label="Upload audio file"
+                                            />
                                         </div>
-                                        <span>{step.label}</span>
-                                    </div>
-                                )
-                            })}
+
+                                        {file && (
+                                            <div className="file-preview">
+                                                <div className="file-info-row">
+                                                    <div className="file-icon-wrapper"><FileIcon aria-hidden="true" /></div>
+                                                    <div className="file-details">
+                                                        <span className="filename">{file.name}</span>
+                                                        <span className="filesize">{formatSize(file.size)}</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </>
+                                )}
+
+                                <div className="landing-profile-badge">
+                                    <span className="profile-badge-icon">🎧</span>
+                                    <span>Complaints Profile</span>
+                                </div>
+
+                                {(isTestMode ? manualTranscriptJson.trim() : file) && (
+                                    <button
+                                        id="process-call-btn"
+                                        className="process-btn"
+                                        onClick={processCall}
+                                        aria-label="Start call analysis"
+                                    >
+                                        {isTestMode ? '🧪 Run Test Analysis' : 'Analyze'}
+                                    </button>
+                                )}
+                            </div>
+
+                            {/* ── Weight Configuration ── */}
+                            <div className="weight-config-panel glass-card">
+                                <WeightSliders
+                                    weights={weights}
+                                    onChange={handleWeightChange}
+                                    disabled={false}
+                                />
+                            </div>
+                        </div>
+
+                        {error && <div className="error-toast" role="alert">{error}</div>}
+                    </div>
+                )}
+
+                {view === 'processing' && (
+                    <div className="processing-view" role="status" aria-live="polite">
+                        <div className="processing-card">
+                            <div className="spinner-container">
+                                <div className="spinner" aria-hidden="true"></div>
+                            </div>
+                            <h2>Processing</h2>
+                            <p className="processing-status">{STEP_STATUS[processingStep]}</p>
+
+                            <div className="progress-bar-container">
+                                <div className="progress-bar" style={{ width: `${(processingStep / 6) * 100}%` }}></div>
+                            </div>
+
+                            <div className="steps-container">
+                                {STEPS.map((step, i) => {
+                                    const stepNum = i + 1
+                                    const isCompleted = processingStep > stepNum
+                                    const isActive = processingStep === stepNum
+                                    return (
+                                        <div key={step.label} className={`step-item ${isCompleted ? 'completed' : isActive ? 'active' : ''}`}>
+                                            <div className="step-circle">
+                                                {isCompleted ? <CheckIcon /> : stepNum}
+                                            </div>
+                                            <span>{step.label}</span>
+                                        </div>
+                                    )
+                                })}
+                            </div>
                         </div>
                     </div>
-                </div>
-            )}
+                )}
 
-            {view === 'dashboard' && result && (
-                <div className="dashboard-view">
-                    <header className="dashboard-header">
-                        <div className="dashboard-header-row">
-                            <div>
-                                <h1>Analysis</h1>
-                                <p>Call quality breakdown</p>
-                            </div>
-                            <button
-                                className="new-call-btn"
-                                onClick={() => { setView('landing'); setFile(null); setResult(null); setAnalyzerResults(null) }}
-                                aria-label="Start new call analysis"
-                            >
-                                New
-                            </button>
+                {view === 'dashboard' && result && (
+                    <div className="dashboard-view">
+                        <div className="dashboard-subtitle">
+                            <h2>Analysis Results</h2>
+                            <p>Call quality breakdown for <strong>{result.filename}</strong></p>
                         </div>
-                    </header>
 
-                    {result.analysis && (
-                        <div className="analysis-section">
-                            <ScoreCard analysis={result.analysis} />
+                        {result.analysis && (
+                            <div className="analysis-section">
+                                <ScoreCard analysis={result.analysis} />
 
-                            <WeightSliders
-                                weights={weights}
-                                onChange={handleWeightChange}
-                                disabled={rescoring}
-                            />
-                            {rescoring && <div className="rescore-indicator">Recalculating...</div>}
+                                {rescoring && <div className="rescore-indicator">Recalculating...</div>}
 
-                            {result.analysis.breakdown && Object.keys(result.analysis.breakdown).length > 0 && (
-                                <div className="param-breakdown">
-                                    <h2 className="breakdown-title">Parameters</h2>
-                                    <div className="param-grid">
-                                        {Object.entries(result.analysis.breakdown).map(([key, param]) => (
-                                            <ParameterCard key={key} paramKey={key} param={param} />
-                                        ))}
+                                {result.analysis.breakdown && Object.keys(result.analysis.breakdown).length > 0 && (
+                                    <div className="param-breakdown">
+                                        <h2 className="breakdown-title">Parameters</h2>
+                                        <div className="param-grid">
+                                            {Object.entries(result.analysis.breakdown).map(([key, param]) => (
+                                                <ParameterCard key={key} paramKey={key} param={param} />
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        <div className="transcript-section">
+                            <div className="transcript-header">
+                                <h3>Transcript</h3>
+                                <button
+                                    id="save-transcript-btn"
+                                    onClick={() => {
+                                        if (!result?.transcription?.transcript) return
+                                        const text = result.transcription.transcript
+                                            .map(seg => `[${Math.floor(seg.start / 60)}:${Math.floor(seg.start % 60).toString().padStart(2, '0')}] ${seg.speaker}: ${seg.text}`)
+                                            .join('\n\n')
+                                        const blob = new Blob([text], { type: 'text/plain' })
+                                        const url = URL.createObjectURL(blob)
+                                        const a = document.createElement('a')
+                                        a.href = url
+                                        a.download = `transcript-${new Date().toISOString().slice(0, 10)}.txt`
+                                        document.body.appendChild(a)
+                                        a.click()
+                                        document.body.removeChild(a)
+                                        URL.revokeObjectURL(url)
+                                    }}
+                                    className="save-btn"
+                                    aria-label="Download transcript"
+                                >
+                                    Export
+                                </button>
+                            </div>
+                            <div className="transcript-container">
+                                {result.transcription?.transcript?.map((seg, idx) => (
+                                    <div key={idx} className={`chat-bubble-row ${seg.speaker.toLowerCase()}`}>
+                                        <div className="speaker-avatar" aria-label={seg.speaker}>
+                                            {seg.speaker === 'Customer' ? 'C' : 'A'}
+                                        </div>
+                                        <div className="chat-bubble">
+                                            <p>{seg.text}</p>
+                                            <div className="bubble-meta">
+                                                <span className="timestamp">
+                                                    {Math.floor(seg.start / 60)}:{Math.floor(seg.start % 60).toString().padStart(2, '0')}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="metrics-grid">
+                            <div className="metric-card sentiment-card">
+                                <h3>Sentiment</h3>
+                                <div className="donut-chart-wrapper">
+                                    <div className="donut-chart" style={{
+                                        background: `conic-gradient(var(--gradient-start) 0% ${getPositivePercent()}%, var(--bg-surface) ${getPositivePercent()}% 100%)`
+                                    }}>
+                                        <div className="donut-hole">
+                                            <span className="donut-percent">{getPositivePercent()}%</span>
+                                            <span className="donut-label">Positive</span>
+                                        </div>
                                     </div>
                                 </div>
+                                <div className="chart-legend">
+                                    <div className="legend-item"><span className="dot positive" aria-hidden="true"></span>Positive</div>
+                                    <div className="legend-item"><span className="dot neutral" aria-hidden="true"></span>Neutral</div>
+                                </div>
+                            </div>
+
+                            <div className="metric-card summary-card">
+                                <h3>Summary</h3>
+                                <div className="summary-grid">
+                                    <div className="summary-item">
+                                        <label>Resolution Status</label>
+                                        <span className="summary-value">
+                                            {result.analysis?.breakdown?.resolution?.metadata?.status || 'Unknown'}
+                                        </span>
+                                    </div>
+                                    <div className="summary-item">
+                                        <label>Exchanges</label>
+                                        <span className="summary-value">
+                                            {result.transcription?.transcript?.length || 0}
+                                        </span>
+                                    </div>
+                                    <div className="summary-item">
+                                        <label>Sentiment</label>
+                                        <span className="summary-value blue">{getPositivePercent()}%</span>
+                                    </div>
+                                    <div className="summary-item">
+                                        <label>Score</label>
+                                        <span
+                                            className="summary-value"
+                                            style={{ color: result.analysis?.final_score ? getScoreColor(result.analysis.final_score) : undefined }}
+                                        >
+                                            {result.analysis?.final_score ? result.analysis.final_score.toFixed(0) : '—'}
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+                )}
+
+                {view === 'history' && (
+                    <div className="history-view">
+                        <div className="history-topbar">
+                            <h2>Call History</h2>
+                            <button className="refresh-btn" onClick={fetchHistory} disabled={historyLoading}>
+                                {historyLoading ? '⏳' : '🔄 Refresh'}
+                            </button>
+                        </div>
+
+                        {stats && stats.total_calls > 0 && (
+                            <div className="stats-strip">
+                                <div className="strip-stat">
+                                    <span className="strip-val">{stats.total_calls}</span>
+                                    <span className="strip-lbl">Calls</span>
+                                </div>
+                                <div className="strip-divider" />
+                                <div className="strip-stat">
+                                    <span className="strip-val" style={{ color: getScoreColor(stats.avg_score || 0) }}>
+                                        {stats.avg_score ?? '—'}
+                                    </span>
+                                    <span className="strip-lbl">Avg Score</span>
+                                </div>
+                                <div className="strip-divider" />
+                                <div className="strip-stat">
+                                    <span className="strip-val" style={{ color: 'var(--success)' }}>
+                                        {stats.committed_count || 0}
+                                    </span>
+                                    <span className="strip-lbl">Resolved</span>
+                                </div>
+                                <div className="strip-divider" />
+                                <div className="strip-stat">
+                                    <span className="strip-val" style={{ color: 'var(--danger)' }}>
+                                        {stats.ghosted_count || 0}
+                                    </span>
+                                    <span className="strip-lbl">Escalated</span>
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="data-table-wrapper">
+                            {historyLoading && <p className="history-loading">Loading history...</p>}
+                            {!historyLoading && history.length === 0 && (
+                                <p className="history-empty">No calls analyzed yet. Upload a call to get started.</p>
+                            )}
+                            {!historyLoading && history.length > 0 && (
+                                <table className="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Filename</th>
+                                            <th>Date</th>
+                                            <th>Score</th>
+                                            <th>Resolution</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {history.map(call => (
+                                            <tr key={call.id}>
+                                                <td className="td-filename">
+                                                    <span className="file-icon-sm">🎵</span>
+                                                    {call.filename}
+                                                </td>
+                                                <td className="td-date">
+                                                    {new Date(call.analyzed_at).toLocaleDateString()}
+                                                    <span className="td-time">{new Date(call.analyzed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                                                </td>
+                                                <td>
+                                                    <span className="table-score" style={{ color: getScoreColor(call.final_score) }}>
+                                                        {call.final_score?.toFixed(0)}
+                                                    </span>
+                                                </td>
+                                                <td>
+                                                    <span className={`commitment-pill ${call.commitment_status === 'Resolved' ? 'status-good' :
+                                                        (call.commitment_status === 'Escalated / Unresolved' || call.commitment_status === 'Ghosted/Uncommitted') ? 'status-bad' :
+                                                            'status-neutral'
+                                                        }`}>
+                                                        {call.commitment_status || 'Unknown'}
+                                                    </span>
+                                                </td>
+                                                <td className="td-actions">
+                                                    <a href={`http://localhost:8000/api/history/${call.id}`} target="_blank" rel="noopener noreferrer" className="action-link" title="View detail">
+                                                        👁 View
+                                                    </a>
+                                                    <a href={`http://localhost:8000/api/report/${call.id}`} target="_blank" rel="noopener noreferrer" className="action-link action-pdf" title="Download PDF">
+                                                        📄 PDF
+                                                    </a>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
                             )}
                         </div>
-                    )}
-
-                    <div className="transcript-section">
-                        <div className="transcript-header">
-                            <h3>Transcript</h3>
-                            <button
-                                id="save-transcript-btn"
-                                onClick={() => {
-                                    if (!result?.transcription?.transcript) return
-                                    const text = result.transcription.transcript
-                                        .map(seg => `[${Math.floor(seg.start / 60)}:${Math.floor(seg.start % 60).toString().padStart(2, '0')}] ${seg.speaker}: ${seg.text}`)
-                                        .join('\n\n')
-                                    const blob = new Blob([text], { type: 'text/plain' })
-                                    const url = URL.createObjectURL(blob)
-                                    const a = document.createElement('a')
-                                    a.href = url
-                                    a.download = `transcript-${new Date().toISOString().slice(0, 10)}.txt`
-                                    document.body.appendChild(a)
-                                    a.click()
-                                    document.body.removeChild(a)
-                                    URL.revokeObjectURL(url)
-                                }}
-                                className="save-btn"
-                                aria-label="Download transcript"
-                            >
-                                Export
-                            </button>
-                        </div>
-                        <div className="transcript-container">
-                            {result.transcription?.transcript?.map((seg, idx) => (
-                                <div key={idx} className={`chat-bubble-row ${seg.speaker.toLowerCase()}`}>
-                                    <div className="speaker-avatar" aria-label={seg.speaker}>
-                                        {seg.speaker === 'Customer' ? 'C' : 'A'}
-                                    </div>
-                                    <div className="chat-bubble">
-                                        <p>{seg.text}</p>
-                                        <div className="bubble-meta">
-                                            <span className="timestamp">
-                                                {Math.floor(seg.start / 60)}:{Math.floor(seg.start % 60).toString().padStart(2, '0')}
-                                            </span>
-                                        </div>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
                     </div>
+                )}
 
-                    <div className="metrics-grid">
-                        <div className="metric-card sentiment-card">
-                            <h3>Sentiment</h3>
-                            <div className="donut-chart-wrapper">
-                                <div className="donut-chart" style={{
-                                    background: `conic-gradient(var(--gradient-start) 0% ${getPositivePercent()}%, var(--bg-surface) ${getPositivePercent()}% 100%)`
-                                }}>
-                                    <div className="donut-hole">
-                                        <span className="donut-percent">{getPositivePercent()}%</span>
-                                        <span className="donut-label">Positive</span>
-                                    </div>
-                                </div>
-                            </div>
-                            <div className="chart-legend">
-                                <div className="legend-item"><span className="dot positive" aria-hidden="true"></span>Positive</div>
-                                <div className="legend-item"><span className="dot neutral" aria-hidden="true"></span>Neutral</div>
-                            </div>
-                        </div>
-
-                        <div className="metric-card summary-card">
-                            <h3>Summary</h3>
-                            <div className="summary-grid">
-                                <div className="summary-item">
-                                    <label>Resolution</label>
-                                    <span className="summary-value">
-                                        {result.analysis?.breakdown?.resolution?.metadata?.status || 'Unknown'}
-                                    </span>
-                                </div>
-                                <div className="summary-item">
-                                    <label>Exchanges</label>
-                                    <span className="summary-value">
-                                        {result.transcription?.transcript?.length || 0}
-                                    </span>
-                                </div>
-                                <div className="summary-item">
-                                    <label>Sentiment</label>
-                                    <span className="summary-value blue">{getPositivePercent()}%</span>
-                                </div>
-                                <div className="summary-item">
-                                    <label>Score</label>
-                                    <span
-                                        className="summary-value"
-                                        style={{ color: result.analysis?.final_score ? getScoreColor(result.analysis.final_score) : undefined }}
-                                    >
-                                        {result.analysis?.final_score ? result.analysis.final_score.toFixed(0) : '—'}
-                                    </span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                </div>
-            )}
-
+            </main>
         </div>
     )
 }

@@ -24,7 +24,7 @@ _DEFAULT_REGISTRY = {
         "name": "sentiment",
         "display_name": "Customer Sentiment",
         "icon": "😊",
-        "description": "Analyzes customer frustration level throughout the call"
+        "description": "Analyzes customer frustration level and emotional journey throughout the call"
     },
     "empathy": {
         "name": "empathy",
@@ -36,7 +36,7 @@ _DEFAULT_REGISTRY = {
         "name": "resolution",
         "display_name": "Resolution Status",
         "icon": "✅",
-        "description": "Evaluates whether the call issue was resolved"
+        "description": "Detects resolution signals vs escalation/failure signals in the closing window"
     }
 }
 
@@ -54,25 +54,48 @@ def get_available_parameters() -> List[Dict]:
     ]
 
 
-# Default Sales weights
-_DEFAULT_WEIGHTS = {"talk_ratio": 10, "sentiment": 20, "empathy": 10, "resolution": 60}
+# ── Profile Weight Definitions ──
+
+# Sales profile — legacy, kept for backward compatibility
+_SALES_WEIGHTS = {"talk_ratio": 10, "sentiment": 20, "empathy": 10, "resolution": 60}
+
+# Complaints profile — prioritises emotional journey and actual resolution
+_COMPLAINTS_WEIGHTS = {"talk_ratio": 5, "sentiment": 30, "empathy": 15, "resolution": 50}
+
+# Map profile key → weights
+_PROFILE_WEIGHTS: Dict[str, Dict[str, int]] = {
+    "sales": _SALES_WEIGHTS,
+    "complaints": _COMPLAINTS_WEIGHTS,
+}
 
 
-def get_default_weights() -> Dict[str, float]:
-    """Return the default Sales profile weights."""
-    return dict(_DEFAULT_WEIGHTS)
+def get_default_weights(profile: str = "sales") -> Dict[str, float]:
+    """
+    Return the weight map for the given profile.
+
+    Args:
+        profile: 'sales' or 'complaints' (default: 'sales' for backward compat)
+
+    Returns:
+        Dict mapping parameter name → weight (integers summing to 100)
+    """
+    return dict(_PROFILE_WEIGHTS.get(profile.lower(), _SALES_WEIGHTS))
 
 
 def load_profile_config(profile_name: str = "sales") -> Dict:
     """
-    Load the Sales profile configuration from client_profiles.json.
+    Load a profile configuration from client_profiles.json.
+    Falls back to built-in defaults if the file or key is missing.
+
+    Supports profiles: 'sales', 'complaints'
 
     Args:
-        profile_name: Ignored — always loads 'sales'
+        profile_name: The profile key to load (e.g. 'sales', 'complaints')
 
     Returns:
         Profile dict with name, description, weights, ideal_talk_ratio
     """
+    profile_key = profile_name.lower()
     config_path = os.path.join(os.path.dirname(__file__), "config", "client_profiles.json")
 
     try:
@@ -80,16 +103,29 @@ def load_profile_config(profile_name: str = "sales") -> Dict:
             profiles = json.load(f)
     except FileNotFoundError:
         logger.error(f"Config file not found: {config_path}")
-        return {
+        profiles = {}
+
+    # Inline fallback definitions (used when JSON doesn't have the key)
+    _FALLBACKS = {
+        "sales": {
             "name": "Sales",
             "description": "Optimized for closing deals — resolution matters most",
-            "weights": dict(_DEFAULT_WEIGHTS),
+            "weights": dict(_SALES_WEIGHTS),
             "ideal_talk_ratio": [0.60, 0.70]
-        }
+        },
+        "complaints": {
+            "name": "Complaints",
+            "description": (
+                "Optimized for customer complaint handling — "
+                "emotional journey and actual resolution matter most"
+            ),
+            "weights": dict(_COMPLAINTS_WEIGHTS),
+            "ideal_talk_ratio": [0.40, 0.55]
+        },
+    }
 
-    return profiles.get("sales", {
-        "name": "Sales",
-        "description": "Optimized for closing deals",
-        "weights": dict(_DEFAULT_WEIGHTS),
-        "ideal_talk_ratio": [0.60, 0.70]
-    })
+    if profile_key in profiles:
+        return profiles[profile_key]
+
+    logger.warning(f"Profile '{profile_key}' not found in config — using built-in fallback")
+    return _FALLBACKS.get(profile_key, _FALLBACKS["sales"])

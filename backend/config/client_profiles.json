@@ -12,5 +12,19 @@
             0.60,
             0.70
         ]
+    },
+    "complaints": {
+        "name": "Complaints",
+        "description": "Optimized for customer complaint handling — emotional journey and actual resolution matter most",
+        "weights": {
+            "talk_ratio": 5,
+            "sentiment": 30,
+            "empathy": 15,
+            "resolution": 50
+        },
+        "ideal_talk_ratio": [
+            0.40,
+            0.55
+        ]
     }
 }
