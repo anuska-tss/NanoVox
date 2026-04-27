@@ -56,11 +56,13 @@ def get_available_parameters() -> List[Dict]:
 
 # ── Profile Weight Definitions ──
 
-# Sales profile — legacy, kept for backward compatibility
-_SALES_WEIGHTS = {"talk_ratio": 10, "sentiment": 20, "empathy": 10, "resolution": 60}
+
+
+# Sales profile — optimized for closing deals, with resolution weighted highest
+_SALES_WEIGHTS = {"talk_ratio": 15, "sentiment": 30, "empathy": 20, "resolution": 35, "heartbeat": 0}
 
 # Complaints profile — prioritises emotional journey and actual resolution
-_COMPLAINTS_WEIGHTS = {"talk_ratio": 5, "sentiment": 30, "empathy": 15, "resolution": 50}
+_COMPLAINTS_WEIGHTS = {"talk_ratio": 5, "sentiment": 35, "empathy": 20, "resolution": 40, "heartbeat": 0}
 
 # Map profile key → weights
 _PROFILE_WEIGHTS: Dict[str, Dict[str, int]] = {
@@ -69,7 +71,7 @@ _PROFILE_WEIGHTS: Dict[str, Dict[str, int]] = {
 }
 
 
-def get_default_weights(profile: str = "sales") -> Dict[str, float]:
+def get_default_weights(profile: str = "complaints") -> Dict[str, float]:
     """
     Return the weight map for the given profile.
 
@@ -82,7 +84,7 @@ def get_default_weights(profile: str = "sales") -> Dict[str, float]:
     return dict(_PROFILE_WEIGHTS.get(profile.lower(), _SALES_WEIGHTS))
 
 
-def load_profile_config(profile_name: str = "sales") -> Dict:
+def load_profile_config(profile_name: str = "complaints") -> Dict:
     """
     Load a profile configuration from client_profiles.json.
     Falls back to built-in defaults if the file or key is missing.

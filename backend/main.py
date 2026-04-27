@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, Form
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from typing import Dict, List, Optional
@@ -10,17 +10,31 @@ import tempfile
 import os
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from modules import talk_ratio_analyzer, sentiment_analyzer, empathy_analyzer, resolution_analyzer
+from modules import talk_ratio_analyzer, sentiment_analyzer, slm_analyzer
+from utils.config_loader import load_config, get_max_upload_size_bytes
+from utils.logger import LoggerFactory, get_logger
 from scoring_engine import calculate_score
 from parameter_registry import get_available_parameters, load_profile_config, get_default_weights
 from database import init_db, save_call, get_history, get_call_detail, get_stats
 from report_generator import generate_report
+from models import ParameterResult, TranscriptSegment, CallSummary, Stats
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
+
+# Load configuration from backend_config.json
+config = load_config()
+MAX_UPLOAD_SIZE = get_max_upload_size_bytes()
+
+# Initialize centralized logging with daily rotation
+log_config = config['logging']
+LoggerFactory.setup(
+    log_dir="logs",
+    log_level=log_config['level'],
+    retention_days=7  # Keep last 7 days of logs
+)
+logger = get_logger(__name__)
 
 app = FastAPI(
     title="NanoVox API",
@@ -28,19 +42,11 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS middleware to allow frontend requests
+# CORS middleware to allow frontend requests (loaded from config)
+cors_config = config['cors']
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://localhost:5175",
-        "http://localhost:5176",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-        "http://127.0.0.1:5175",
-        "http://127.0.0.1:5176",
-    ],
+    allow_origins=cors_config['allowed_origins'],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -52,8 +58,9 @@ whisper_model = None
 # Global variable for VADER analyzer
 vader_analyzer = None
 
-# Thread pool for running analyzers concurrently
-_executor = ThreadPoolExecutor(max_workers=4)
+# Thread pool for running analyzers concurrently (configured from backend_config.json)
+thread_config = config['threading']
+_executor = ThreadPoolExecutor(max_workers=thread_config['max_workers'])
 
 
 @app.on_event("startup")
@@ -63,9 +70,11 @@ async def load_models():
 
     logger.info("loading models...")
 
-    # Load Whisper
-    logger.info("Loading Whisper tiny model...")
-    whisper_model = whisper.load_model("tiny")
+    # Load Whisper (configured from backend_config.json)
+    ml_config = config['ml_models']
+    whisper_name = ml_config['whisper_model']
+    logger.info(f"Loading Whisper {whisper_name} model...")
+    whisper_model = whisper.load_model(whisper_name)
     logger.info("Whisper model loaded!")
 
     # Load VADER Sentiment
@@ -81,105 +90,91 @@ async def load_models():
 
 def _run_analyzers(transcript: list, profile_config: dict) -> list:
     """
-    Run all 4 analyzers and return their results.
+    Run all analyzers and return their results.
     Each analyzer is independent — if one fails, the others still return.
+
+    Pipeline:
+      1. Talk Ratio    — phase-aware time-based analysis (keyword-free)
+      2. Sentiment     — VADER compound score with tiered frustration penalty
+      3. Empathy       — phi3.5 via Ollama
+      4. Resolution    — phi3.5 via Ollama
+      5. SLM Sentiment — phi3.5 true sentiment (sarcasm-aware override)
+
+    After collecting results, the SLM Sentiment Override rule is applied:
+      - If SLM says Negative but VADER scored > 40  → force VADER score to 15
+      - If SLM says Positive  but VADER scored < 50  → force VADER score to 85
+    This corrects VADER blindspots with sarcasm and indirect negative language.
     """
+    logger.info(f"🧪 [DEBUG] _run_analyzers triggered with {len(transcript)} segments")
     results = []
 
+   
     # 1. Talk Ratio
     try:
         results.append(talk_ratio_analyzer.analyze(transcript, profile_config))
+        logger.info("🧪 [DEBUG] Talk ratio analyzer finished")
     except Exception as e:
         logger.error(f"Talk ratio analyzer failed: {e}")
 
     # 2. Sentiment (needs VADER instance)
     try:
         results.append(sentiment_analyzer.analyze(transcript, profile_config, vader_analyzer))
+        logger.info("🧪 [DEBUG] Sentiment analyzer finished")
     except Exception as e:
         logger.error(f"Sentiment analyzer failed: {e}")
 
-    # 3. Empathy
+    # 3 + 4 + 5. Empathy + Resolution + SLM Sentiment via SLM (single Ollama call)
+    # If Ollama is unreachable, slm_analyzer returns neutral fallback scores internally.
     try:
-        results.append(empathy_analyzer.analyze(transcript, profile_config))
+        slm_results = slm_analyzer.analyze(transcript, profile_config)
+        results.extend(slm_results)
+        logger.info(f"🧪 [DEBUG] SLM analyzer returned {len(slm_results)} results")
     except Exception as e:
-        logger.error(f"Empathy analyzer failed: {e}")
+        logger.error(f"SLM analyzer failed entirely: {e} — pipeline continues without empathy/resolution", exc_info=True)
 
-    # 4. Resolution
-    try:
-        results.append(resolution_analyzer.analyze(transcript, profile_config))
-    except Exception as e:
-        logger.error(f"Resolution analyzer failed: {e}")
+    logger.info(f"🧪 [DEBUG] All analyzers finished, collected {len(results)} results before SLM override")
+
+    # ── SLM Sentiment Override ────────────────────────────────────────────────
+    # Find the VADER sentiment result and SLM sentiment result by name
+    vader_result    = next((r for r in results if r.name == "sentiment"), None)
+    slm_sent_result = next((r for r in results if r.name == "slm_sentiment"), None)
+
+    if vader_result and slm_sent_result:
+        slm_sentiment = slm_sent_result.metadata.get("true_sentiment", "Neutral")
+        vader_score   = vader_result.score
+
+        if slm_sentiment == "Negative" and vader_score > 40.0:
+            logger.warning(
+                f"SLM Override: VADER={vader_score:.1f} but SLM=Negative — "
+                f"forcing VADER score to 15.0"
+            )
+            vader_result.score   = 15.0
+            vader_result.penalty = 85.0
+            vader_result.metadata["slm_override"]    = True
+            vader_result.metadata["override_reason"] = (
+                "SLM detected underlying negative context/sarcasm"
+            )
+
+        elif slm_sentiment == "Positive" and vader_score < 50.0:
+            logger.warning(
+                f"SLM Override: VADER={vader_score:.1f} but SLM=Positive — "
+                f"forcing VADER score to 85.0"
+            )
+            vader_result.score   = 85.0
+            vader_result.penalty = 15.0
+            vader_result.metadata["slm_override"]    = True
+            vader_result.metadata["override_reason"] = (
+                "SLM detected genuinely positive sentiment underscored by VADER"
+            )
+        else:
+            vader_result.metadata["slm_override"] = False
+            logger.info(
+                f"SLM Override: no override needed "
+                f"(VADER={vader_score:.1f}, SLM={slm_sentiment})"
+            )
 
     return results
 
-
-def analyze_call_insights(transcript_segments: list) -> Dict:
-    """
-    Legacy insights function — kept for backward compatibility.
-    Produces the same response shape the frontend currently expects.
-    """
-    if not transcript_segments:
-        return {
-            "sentiment": "neutral",
-            "sentiment_score": 0.0,
-            "key_points": [],
-            "action_items": [],
-            "summary": "No audio transcribed.",
-            "customer_frustration": 0.0,
-            "agent_empathy": 5.0,
-            "call_resolution": False
-        }
-
-    # Customer frustration via VADER
-    customer_segments = [s for s in transcript_segments if s["speaker"] == "Customer"]
-    customer_frustration_score = 0.0
-    if customer_segments and vader_analyzer:
-        compound_scores = []
-        for seg in customer_segments:
-            scores = vader_analyzer.polarity_scores(seg["text"])
-            compound = scores['compound']
-            if compound < -0.05:
-                compound_scores.append(abs(compound) * 10.0)
-            else:
-                compound_scores.append(0.0)
-        if compound_scores:
-            customer_frustration_score = sum(compound_scores) / len(compound_scores)
-
-    # Agent empathy (simple heuristic)
-    agent_texts = [s["text"].lower() for s in transcript_segments if s["speaker"] == "Agent"]
-    empathy_keywords = ['sorry', 'apologize', 'understand', 'help', 'assist', 'thank', 'appreciate', 'please']
-    agent_empathy_score = 5.0
-    if agent_texts:
-        match_count = sum(1 for text in agent_texts if any(k in text for k in empathy_keywords))
-        if len(agent_texts) > 0:
-            empathy_ratio = match_count / len(agent_texts)
-            agent_empathy_score = min(10.0, 2.0 + (empathy_ratio * 8.0))
-
-    # Resolution status
-    is_resolved = False
-    if transcript_segments:
-        last_segments = transcript_segments[-3:]
-        combined_last_text = " ".join(s["text"].lower() for s in last_segments)
-        resolution_keywords = ['thank you', 'thanks', 'great', 'buh-bye', 'bye', 'helped', 'fixed', 'works now']
-        if any(k in combined_last_text for k in resolution_keywords):
-            is_resolved = True
-
-    overall_sentiment = "neutral"
-    if customer_frustration_score > 6.0:
-        overall_sentiment = "negative"
-    elif customer_frustration_score < 3.0:
-        overall_sentiment = "positive"
-
-    return {
-        "sentiment": overall_sentiment,
-        "sentiment_score": round(customer_frustration_score, 2),
-        "key_points": [],
-        "action_items": [],
-        "summary": "Automated summary unavailable (Offline Mode)",
-        "customer_frustration": round(customer_frustration_score, 2),
-        "agent_empathy": round(agent_empathy_score, 2),
-        "call_resolution": is_resolved
-    }
 
 
 @app.get("/")
@@ -188,10 +183,10 @@ async def root() -> Dict[str, str]:
     return {"status": "ok", "message": "NanoVox API is running"}
 
 
-@app.get("/api/parameters/available")
-async def get_parameters():
-    """Return all available analysis parameters for dynamic UI generation."""
-    return {"parameters": get_available_parameters()}
+# @app.get("/api/parameters/available")
+# async def get_parameters():
+#     """Return all available analysis parameters for dynamic UI generation."""
+#     return {"parameters": get_availaebl_parameters()}
 
 
 @app.get("/api/weights/defaults")
@@ -202,29 +197,50 @@ async def get_default_weights_endpoint():
 
 class RescoreRequest(BaseModel):
     """Request body for the rescore endpoint."""
-    analyzer_results: List[dict]
-    weights: Dict[str, float]
+    analyzer_results: List[ParameterResult] = Field(..., description="Cached analyzer outputs from a previous analysis")
+    weights: Dict[str, float] = Field(..., description="Map of parameter name to weight percentage")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "analyzer_results": [
+                    {
+                        "name": "talk_ratio",
+                        "display_name": "Talk Ratio",
+                        "icon": "🗣️",
+                        "raw_value": 0.65,
+                        "score": 85.0,
+                        "penalty": 15.0,
+                        "metadata": {}
+                    }
+                ],
+                "weights": {"talk_ratio": 5, "sentiment": 35, "empathy": 20, "resolution": 40}
+            }
+        }
+    }
 
 
 class TestAnalysisRequest(BaseModel):
     """
     Request body for the /api/test-analysis endpoint.
-
-    Allows direct scoring-engine testing without an audio file.
-    The transcript segments must match the format produced by Whisper +
-    the speaker-attribution step:
-
-        [
-          {"speaker": "Agent",    "start": 0.0,  "end": 5.2,  "text": "..."},
-          {"speaker": "Customer", "start": 5.4,  "end": 10.1, "text": "..."}
-        ]
-
-    Weights should sum to 100 and use the canonical parameter names
-    (talk_ratio, sentiment, empathy, resolution).
     """
-    transcript: List[dict]
-    weights: Optional[Dict[str, float]] = None
-    profile: Optional[str] = "complaints"
+    transcript: List[TranscriptSegment] = Field(..., description="List of speaker segments")
+    weights: Optional[Dict[str, float]] = Field(None, description="Optional custom weights")
+    profile: Optional[str] = Field("complaints", description="The analysis profile to use")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "transcript": [
+                    {"speaker": "Agent", "start": 0.0, "end": 5.0, "text": "Thank you for calling SkyWays Premium Support. My name is David. How can I assist you today?"},
+                    {"speaker": "Customer", "start": 5.5, "end": 18.0, "text": "David, I am absolutely furious. I just got an email saying my flight to London tonight is cancelled."},
+                    {"speaker": "Agent", "start": 18.5, "end": 26.0, "text": "I am so incredibly sorry to hear that. Let me pull up your itinerary immediately."},
+                ],
+                "weights": {"talk_ratio": 5, "sentiment": 35, "empathy": 20, "resolution": 40},
+                "profile": "complaints"
+            }
+        }
+    }
 
 
 @app.post("/api/test-analysis")
@@ -254,10 +270,21 @@ async def test_analysis(request: TestAnalysisRequest) -> Dict:
         profile_config = load_profile_config(request.profile or "complaints")
 
         # Run all four analyzers against the supplied transcript
-        loop = asyncio.get_event_loop()
-        analyzer_results = await loop.run_in_executor(
-            _executor, _run_analyzers, request.transcript, profile_config
-        )
+        # Convert Pydantic models to dicts so analyzers can access them via keys
+        transcript_dicts = [s.model_dump() for s in request.transcript]
+
+        logger.info(f"🧪 [DEBUG] Calling _run_analyzers via executor with {len(transcript_dicts)} dicts")
+        try:
+            loop = asyncio.get_event_loop()
+            analyzer_results = await loop.run_in_executor(
+                _executor, _run_analyzers, transcript_dicts, profile_config
+            )
+            logger.info(f"🧪 [DEBUG] Executor returned analyzer_results (count={len(analyzer_results)})")
+            for idx, res in enumerate(analyzer_results):
+                logger.info(f"🧪 [DEBUG] Result {idx}: {res.name} (penalty={res.penalty})")
+        except Exception as e:
+            logger.error(f"🧪 [DEBUG] Executor failed with exception: {e}", exc_info=True)
+            raise
 
         # Use supplied weights → profile defaults → built-in defaults
         scoring_weights = (
@@ -295,7 +322,7 @@ async def rescore(request: RescoreRequest) -> Dict:
     from models import ParameterResult
 
     try:
-        results = [ParameterResult(**r) for r in request.analyzer_results]
+        results = request.analyzer_results
         call_score = calculate_score(results, request.weights, "Sales")
         return call_score.model_dump()
     except Exception as e:
@@ -305,8 +332,8 @@ async def rescore(request: RescoreRequest) -> Dict:
 
 @app.post("/analyze")
 async def analyze_audio(
-    file: UploadFile = File(...),
-    weights: Optional[str] = Form(None)
+    file: UploadFile = File(..., description="Audio file to analyze (.wav, .mp3, .m4a)"),
+    weights: Optional[str] = Form(None, description="Optional JSON string of custom weights", example='{"talk_ratio":5,"sentiment":35,"empathy":20,"resolution":40}')
 ) -> Dict:
     """
     Analyze an audio file: transcribe + run parameter scoring.
@@ -333,6 +360,13 @@ async def analyze_audio(
     contents = await file.read()
     file_size_bytes = len(contents)
     logger.info(f"File size: {file_size_bytes} bytes ({file_size_bytes / 1024:.2f} KB)")
+
+    if file_size_bytes > MAX_UPLOAD_SIZE:
+        logger.error(f"File too large: {file_size_bytes} bytes")
+        raise HTTPException(
+            status_code=413,
+            detail=f"File is too large ({file_size_bytes / (1024 * 1024):.1f}MB). Maximum allowed is 50MB."
+        )
 
     # Save to temporary file for Whisper processing
     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as temp_file:
@@ -382,9 +416,10 @@ async def analyze_audio(
                 if i == 0:
                     speaker_ids.append(current_id)
                 else:
-                    # Check for a natural speaker change via pause gap
+                    # Check for a natural speaker change via pause gap (configured from backend_config.json)
+                    speaker_config = config['speaker_detection']
                     gap = seg["start"] - whisper_segments[i - 1]["end"]
-                    if gap > 0.3:
+                    if gap > speaker_config['pause_gap_seconds']:
                         # Likely a speaker change if there's a pause
                         current_id = 1 - current_id
                     # else: same speaker continues (no flip)
@@ -409,13 +444,14 @@ async def analyze_audio(
                         scores[sid] -= 1
 
             # ── Step 3: Apply structural weights ──
-            # Anchor bonus: first speaker gets +12 (agent usually initiates)
+            # Anchor bonus: first speaker gets bonus (agent usually initiates)
+            speaker_config = config['speaker_detection']
             anchor_id = speaker_ids[0]
-            scores[anchor_id] += 12
+            scores[anchor_id] += speaker_config['anchor_bonus_points']
 
-            # Closer bonus: last speaker gets +6
+            # Closer bonus: last speaker gets bonus
             closer_id = speaker_ids[-1]
-            scores[closer_id] += 6
+            scores[closer_id] += speaker_config['closer_bonus_points']
 
             # ── Step 4: Global assignment ──
             if scores[0] >= scores[1]:
@@ -442,23 +478,20 @@ async def analyze_audio(
 
         transcript = identify_speakers(result["segments"])
 
-        # ── Step 2: Legacy insights (backward compatibility) ──
-        try:
-            insights = analyze_call_insights(transcript)
-        except Exception as e:
-            logger.error(f"Legacy insights failed: {e}")
-            insights = {
-                "sentiment": "neutral", "sentiment_score": 0.0,
-                "key_points": [], "action_items": [],
-                "summary": "Analysis failed.",
-                "customer_frustration": 0.0, "agent_empathy": 5.0,
-                "call_resolution": False
-            }
+        # ── Step 2: Minimal insights stub (legacy field retained for API compatibility) ──
+        insights = {
+            "sentiment": "neutral", "sentiment_score": 0.0,
+            "key_points": [], "action_items": [],
+            "summary": "",
+            "customer_frustration": 0.0, "agent_empathy": 0.0,
+            "call_resolution": False
+        }
 
         # ── Step 3: New parameter-based scoring ──
         analysis = None
         try:
-            profile_config = load_profile_config("sales")
+            profile_name = config['profiles']['default']
+            profile_config = load_profile_config(profile_name)
 
             # Run analyzers (using thread pool to avoid blocking)
             loop = asyncio.get_event_loop()
@@ -519,7 +552,7 @@ async def analyze_audio(
             logger.info("Temporary file cleaned up")
 
 
-@app.get("/api/history")
+@app.get("/api/history", response_model=List[CallSummary])
 async def api_history(limit: int = 10, offset: int = 0) -> List[Dict]:
     """Get recent analyzed calls, most recent first."""
     return get_history(limit=limit, offset=offset)
@@ -534,7 +567,7 @@ async def api_call_detail(call_id: int) -> Dict:
     return result
 
 
-@app.get("/api/stats")
+@app.get("/api/stats", response_model=Stats)
 async def api_stats() -> Dict:
     """Get aggregate stats across all analyzed calls."""
     return get_stats()
@@ -564,4 +597,5 @@ async def api_report(call_id: int):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    server_config = config['server']
+    uvicorn.run(app, host=server_config['host'], port=server_config['port'])

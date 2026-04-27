@@ -1,0 +1,28 @@
+Task_ID,Task_Name,Module,Day,Hours,Story_Points,Dependencies,Priority,Scope,Status,Notes
+1.1,Create Feature Branch & Setup,DevOps,1,0.5,1,None,Critical,MVP,Not Started,Git branch + verify code runs
+1.2,Code Audit (Quick),Documentation,1,1,1,None,High,MVP,Not Started,Identify debug logs + state issues
+1.3,Create Directory Structure,Backend,1,0.5,1,1.1,Critical,MVP,Not Started,app/ package with all subdirs
+2.1,Extract Constants,Frontend,1,1,1,None,High,MVP,Not Started,4 const files from App.jsx
+2.2,Create 5 Custom Hooks,Frontend,1,2,3,2.1,Critical,MVP,Not Started,useAnalysis; useTheme; useWeights; useHistory; useFileUpload
+3.1,Create Config Layer,Backend,1,1,2,1.3,Critical,MVP,Not Started,settings.py + .env files
+3.2,Organize Pydantic Models,Backend,1,1,1,1.3,High,MVP,Not Started,Split models into separate files
+4.1,Remove Debug Logs,Backend,1,1,1,1.2,High,MVP,Not Started,Remove all "🧪 [DEBUG]" + logger.info() calls
+2.3,Create View Components,Frontend,2,2,2,2.2,Critical,MVP,Not Started,LandingView; ProcessingView; DashboardView; HistoryView; Header
+3.3,Create Service Layer,Backend,2,1.5,3,3.2,Critical,MVP,Not Started,AnalysisService; HistoryService; FileService (basic)
+3.4,Create Router Files,Backend,2,1.5,3,3.3,Critical,MVP,Not Started,analysis.py; history.py; health.py; weights.py routers
+4.2,Implement Error-Focused Logging,Backend,2,2,2,4.1,High,MVP,Not Started,Try-except blocks + error logging pattern
+2.4,Refactor App.jsx,Frontend,2,1.5,2,2.3,Critical,MVP,Not Started,Reduce to 80-100 lines using hooks + views
+2.5,Quick Frontend Testing,Frontend,2,0.5,1,2.4,High,MVP,Not Started,Smoke tests: upload; theme; weights; no errors
+3.5,Complete main.py Refactoring,Backend,3,1,2,3.4,Critical,MVP,Not Started,Clean app creation; register routers; 50-60 lines
+3.6,Backend API Testing,Backend,3,1.5,2,3.5,High,MVP,Not Started,Test all endpoints: /analyze; /history; /rescore; /weights
+5.1-2,Create Diarization Service,Backend,3,2.5,3,3.1,Critical,MVP,Not Started,SLM-based speaker ID; Ollama integration
+2.5-B,Complete Frontend Testing,Frontend,3,1,1,2.4,High,MVP,Not Started,Fix bugs; responsive check; all features work
+Integration,E2E Testing (Frontend+Backend),QA,3,2,2,3.5+2.5,Critical,MVP,Not Started,Upload file → results; verify no errors
+5.3,Integrate Diarization,Backend,4,2,3,5.1-2,Critical,Optional,Not Started,Add to analysis pipeline; test speaker labels
+5.4,Diarization Testing,Backend,4,3,2,5.3,High,Optional,Not Started,Accuracy > 75%; error handling; performance
+Docs-1,Update README,Documentation,4,0.5,1,3.5,Medium,Optional,Not Started,Add architecture section + link to docs
+Docs-2,Create ARCHITECTURE.md,Documentation,4,0.5,1,3.5,Medium,Optional,Not Started,Folder structure + diagram (brief)
+Release-1,Final Code Review,QA,5,1.5,1,Integration,High,Optional,Not Started,Review all changes; check for regressions
+Release-2,Create Release Notes,Documentation,5,0.5,1,Release-1,High,Optional,Not Started,v2.0.0 release notes
+Release-3,Git Tag & Merge,DevOps,5,0.5,1,Release-2,High,Optional,Not Started,Tag v2.0.0; merge to main
+Release-4,Team Handoff,Training,5,2,1,Release-1,High,Optional,Not Started,Show architecture; explain changes; Q&A

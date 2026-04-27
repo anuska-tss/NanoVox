@@ -1,0 +1,34 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8000
+  },
+  "upload": {
+    "max_file_size_mb": 50
+  },
+  "logging": {
+    "level": "INFO",
+    "file_name": "backend_debug.log",
+    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  },
+  "ml_models": {
+    "whisper_model": "tiny"
+  },
+  "threading": {
+    "max_workers": 4
+  },
+  "speaker_detection": {
+    "pause_gap_seconds": 0.3,
+    "anchor_bonus_points": 12,
+    "closer_bonus_points": 6
+  },
+  "profiles": {
+    "default": "sales"
+  },
+  "cors": {
+    "allowed_origins": [
+      "http://localhost:5173",
+      "http://localhost:5174"
+    ]
+  }
+}

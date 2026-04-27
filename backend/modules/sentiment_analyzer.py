@@ -13,7 +13,6 @@ penalty reduction (up to 60%) instead of the original 30%.
 """
 import logging
 from models import ParameterResult
-
 logger = logging.getLogger(__name__)
 
 

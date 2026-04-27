@@ -8,4 +8,4 @@ pip install -r requirements.txt
 
 echo.
 echo Starting FastAPI server...
-python -m uvicorn main:app --reload
+python -m uvicorn main:app --reload --log-level debug

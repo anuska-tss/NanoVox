@@ -1,0 +1,26 @@
+Task_ID,Task_Name,Module,Day,Hours,Story_Points,Dependencies,Priority,Status,Description
+1.1,Environment Setup & Feature Branch,DevOps,1,1,1,None,Critical,Not Started,Create feature branch for refactoring; ensure all dependencies installed; verify code runs
+1.2,Code Audit & Current State Documentation,Documentation,1,2,2,None,High,Not Started,Document current state of App.jsx; analyze main.py; identify pain points and logging issues
+1.3,Create Project Directory Structure,Backend,1,1,1,1.1,High,Not Started,Create app/ package with subdirectories (config; api/routers; services; core; models; ml)
+2.1,Create Constants & Utils Layer,Frontend,2,3,2,None,High,Not Started,Extract constants from App.jsx into dedicated files; create validators and formatters
+2.2,Create Custom Hooks,Frontend,2-3,5,3,2.1,High,Not Started,Create useAnalysis; useTheme; useWeights; useHistory hooks with business logic
+2.3,Create View Components,Frontend,3,4,3,2.2,High,Not Started,Create LandingView; ProcessingView; DashboardView; HistoryView; Header components
+2.4,Refactor App.jsx,Frontend,4,3,2,2.3,Critical,Not Started,Refactor monolithic App.jsx to thin router using hooks and view components
+2.5,Frontend Testing & Bug Fixes,Frontend,5,3,2,2.4,High,Not Started,Complete testing of all frontend features; verify no console errors; accessibility check
+3.1,Create Config Layer,Backend,2,2,2,1.3,High,Not Started,Create Settings class; load from environment and JSON; create .env and .env.example files
+3.2,Create Models Layer,Backend,2,2,1,1.3,High,Not Started,Organize Pydantic models into separate files (requests; responses; analysis)
+3.3,Create Service Layer,Backend,3-4,6,3,3.1 3.2,Critical,Not Started,Extract business logic into services (AnalysisService; HistoryService; FileService; WeightService)
+3.4,Create Router Files,Backend,4-5,5,3,3.3,Critical,Not Started,Move routes from main.py to separate routers by domain (analysis; history; weights; health)
+3.5,Refactor main.py,Backend,6,2,2,3.4,Critical,Not Started,Strip main.py to 50-60 lines; keep only app creation; middleware; router registration
+3.6,Backend Testing & Integration,Backend,7,3,2,3.5,High,Not Started,Test all API endpoints; verify integration of services; test error handling
+4.1,Remove Debug Logs,Backend,3-4,2,1,1.2,High,Not Started,Remove all "🧪 [DEBUG]" logs and debug-level logging from codebase
+4.2,Implement Error-Focused Logging,Backend,4,3,2,4.1,High,Not Started,Add try-except blocks; log only errors with exc_info=True; remove info logs from happy path
+4.3,Logging Testing,Backend,4,2,1,4.2,High,Not Started,Verify logging works correctly; happy path produces 0 logs; errors have full traceback
+5.1,Design Diarization Service Architecture,Backend,5,2,2,3.1,High,Not Started,Design diarization using SLM; define input/output models; integration points; error handling
+5.2,Create SLM Diarization Module,Backend,6,5,3,5.1,Critical,Not Started,Implement speaker identification using SLM (phi3.5 via Ollama); engineer prompts; handle errors
+5.3,Integrate Diarization into Analysis Pipeline,Backend,7,4,3,5.2 3.3,Critical,Not Started,Add diarization to analysis workflow; update talk_ratio and sentiment analyzers; test integration
+5.4,Diarization Testing & Validation,Backend,8,3,2,5.3,High,Not Started,Test speaker identification accuracy; validate results; test edge cases and error scenarios
+6.1,End-to-End Testing,QA,9,4,3,5.4 3.6,Critical,Not Started,Complete testing of entire application flow; test all features; cross-browser testing
+6.2,Performance & Load Testing,QA,9,3,2,6.1,High,Not Started,Benchmark response times; test with multiple concurrent requests; verify resource usage
+6.3,Code Review & Documentation,Documentation,10,3,2,6.2,High,Not Started,Review all code changes; update README; create ARCHITECTURE; DIARIZATION; MIGRATION docs
+6.4,Deployment Prep & Release,DevOps,10,2,1,6.3,Critical,Not Started,Create release notes; merge all PRs; tag release; prepare rollback plan; team training
